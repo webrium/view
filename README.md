@@ -584,6 +584,111 @@ try {
 }
 ```
 
+
+## Editor.js Integration
+
+Zog includes a built-in parser that converts [Editor.js](https://editorjs.io/) JSON output to clean HTML, ready to be rendered inside any Zog template via `@raw()`.
+
+### Supported block types
+
+| Block type | Output |
+|---|---|
+| `paragraph` | `<p>` |
+| `header` | `<h1>`–`<h6>` |
+| `list` | `<ul>` / `<ol>` |
+| `nestedList` | Nested `<ul>` / `<ol>` |
+| `image` | `<figure><img></figure>` |
+| `quote` | `<blockquote>` |
+| `code` | `<pre><code>` |
+| `table` | `<table>` with optional `<thead>` |
+| `delimiter` | `<hr>` |
+| `embed` | `<iframe>` wrapper |
+| `warning` | Alert `<div>` |
+| `raw` | Verbatim HTML pass-through |
+| `checklist` | `<ul>` with checkboxes |
+| `linkTool` | Anchor card with optional image |
+| `attaches` | Download link with file size |
+| `personality` | Author card |
+
+### Basic usage
+
+```php
+use Zog\EditorJs\EditorJsParser;
+
+$parser = new EditorJsParser();
+
+// $json can be a JSON string or a pre-decoded array
+$html = $parser->parse($json);
+```
+
+Then render it in a Zog template:
+
+```html
+<article>
+    @raw($content)
+</article>
+```
+
+Full example with Zog:
+
+```php
+use Zog\Zog;
+use Zog\EditorJs\EditorJsParser;
+
+Zog::setViewDir(__DIR__ . '/views');
+
+$parser  = new EditorJsParser();
+$content = $parser->parse($jsonFromDatabase);
+
+echo Zog::render('pages/article.php', compact('content'));
+```
+
+### Custom CSS classes
+
+Pass a config array to override the CSS class for any block type:
+
+```php
+$parser = new EditorJsParser([
+    'paragraph' => ['class' => 'prose-p'],
+    'header'    => ['class' => 'article-heading'],
+    'image'     => [
+        'figureClass'     => 'image-wrap',
+        'class'           => 'article-img',
+        'captionClass'    => 'image-caption',
+        'borderClass'     => 'image--bordered',
+        'stretchedClass'  => 'image--stretched',
+        'backgroundClass' => 'image--background',
+    ],
+    'quote'     => ['class' => 'pullquote', 'captionClass' => 'pullquote__author'],
+    'code'      => ['class' => 'code-block', 'codeClass' => 'language-php'],
+]);
+```
+
+### Registering custom block handlers
+
+If you use custom Editor.js tools, register a handler with a callable:
+
+```php
+$parser->registerBlock('alert', function (array $data, array $config): string {
+    $type    = htmlspecialchars($data['type'] ?? 'info', ENT_QUOTES, 'UTF-8');
+    $message = htmlspecialchars($data['message'] ?? '', ENT_QUOTES, 'UTF-8');
+    return "<div class=\"alert alert--{$type}\">{$message}</div>\n";
+});
+```
+
+Registered handlers take priority over built-in ones, so you can also override any default block type this way.
+
+### Inline HTML sanitization
+
+By default the parser allows common inline tags (`<b>`, `<i>`, `<a>`, `<mark>`, `<code>`, `<br>`, `<span>`, etc.) and strips everything else from text fields. To disable sanitization entirely (only do this if you fully trust the content source):
+
+```php
+$parser = new EditorJsParser(config: [], sanitize: false);
+```
+
+> **Note:** The `raw` block type always passes its HTML through as-is, regardless of the `sanitize` flag. Sanitize or escape its content on the way into the database if needed.
+
+
 ## Notes
 
 * Zog does **not** use `eval`; compiled templates are normal PHP files that are `require`d.
