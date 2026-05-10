@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace Zog;
+namespace Webrium\View;
 
 /**
  * View helpers for layouts, sections and components.
@@ -27,7 +27,7 @@ class View
      */
     public static function make(string $view, array $data = []): string
     {
-        return Zog::render($view, $data);
+        return Engine::render($view, $data);
     }
 
     /**
@@ -35,7 +35,7 @@ class View
      */
     public static function component(string $view, array $data = []): string
     {
-        return Zog::render($view, $data);
+        return Engine::render($view, $data);
     }
 
     /**
@@ -62,7 +62,7 @@ class View
         self::clearSections();
 
         // 1) Render child view first so it can register sections.
-        $childHtml = Zog::render($view, $data);
+        $childHtml = Engine::render($view, $data);
 
         // 2) If no explicit "content" section is defined, use full child HTML.
         if (!array_key_exists('content', self::$sections)) {
@@ -70,7 +70,7 @@ class View
         }
 
         // 3) Render layout; @yield() inside layout will read from sections.
-        $output = Zog::render($layout, $data);
+        $output = Engine::render($layout, $data);
 
         self::clearSections();
 
@@ -84,7 +84,7 @@ class View
     {
         $name = trim($name);
         if ($name === '') {
-            throw new ZogException('Section name cannot be empty.');
+            throw new ViewException('Section name cannot be empty.');
         }
 
         self::$sectionStack[] = $name;
@@ -97,7 +97,7 @@ class View
     public static function endSection(): void
     {
         if (empty(self::$sectionStack)) {
-            throw new ZogException('Cannot end section: no open section.');
+            throw new ViewException('Cannot end section: no open section.');
         }
 
         $name = array_pop(self::$sectionStack);
@@ -113,7 +113,7 @@ class View
     {
         $name = trim($name);
         if ($name === '') {
-            throw new ZogException('Section name cannot be empty.');
+            throw new ViewException('Section name cannot be empty.');
         }
 
         if (array_key_exists($name, self::$sections)) {
