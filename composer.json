@@ -1,6 +1,6 @@
 {
-    "name": "zogjs/zog-php",
-    "description": "Lightweight PHP template engine with hybrid static caching (no eval).",
+    "name": "webrium/view",
+    "description": "Lightweight PHP template engine with hybrid static caching (no eval) for the Webrium framework.",
     "type": "library",
     "license": "MIT",
     "authors": [
@@ -9,27 +9,27 @@
             "email": "benkhalife@proton.me"
         }
     ],
-    "homepage": "https://zogjs.com",
-
+    "homepage": "https://github.com/webrium/view",
     "support": {
-        "issues": "https://github.com/zogjs/zog-php/issues",
-        "source": "https://github.com/zogjs/zog-php"
+        "issues": "https://github.com/webrium/view/issues",
+        "source": "https://github.com/webrium/view"
     },
-
     "scripts": {
-        "tests":"./vendor/bin/phpunit --testdox tests"
+        "tests": "./vendor/bin/phpunit --testdox tests"
     },
     "require": {
         "php": "^8.1"
     },
     "autoload": {
         "psr-4": {
-            "Zog\\": "src/"
+            "Webrium\\View\\": "src/",
+            "Webrium\\View\\EditorJs\\": "src/EditorJs/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "ZogPhp\\Tests\\": "tests/"
+            "Webrium\\View\\Tests\\": "tests/",
+            "Webrium\\View\\EditorJs\\Tests\\": "tests/"
         }
     },
     "minimum-stability": "stable",
