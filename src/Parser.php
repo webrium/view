@@ -1,12 +1,12 @@
 <?php
 declare(strict_types=1);
 
-namespace Zog;
+namespace Webrium\View;
 
 /**
- * Zog template parser / compiler (DOM-less).
+ * Webrium\\View template parser / compiler (DOM-less).
  *
- * - Converts Zog templates into executable PHP + HTML.
+ * - Converts Webrium\\View templates into executable PHP + HTML.
  * - Does NOT use DOMDocument, so "exotic" attributes like @click, :class,
  *   x-data, wire:click, etc. are preserved exactly as written.
  * - Supports:
@@ -17,14 +17,14 @@ namespace Zog;
  *     @section(name) / @endsection   => View::startSection / View::endSection
  *     @yield(name)                   => View::yieldSection
  *     @component(view, data)         => View::component(...)
- *     zp-if / zp-else-if / zp-else   => if / elseif / else
- *     zp-for                         => foreach
- *     zp-nozog                       => disable DOM-level processing for subtree
+ *     w-if / w-else-if / w-else   => if / elseif / else
+ *     w-for                         => foreach
+ *     w-skip                       => disable DOM-level processing for subtree
  *
  * - On <script> and <style>:
  *     * They are treated as "raw text" elements: inner content is not parsed
  *       as HTML; we only look for the matching closing tag.
- *     * If the tag itself has zp-nozog, no Zog processing (inline or DOM-level)
+ *     * If the tag itself has w-skip, no Zog processing (inline or DOM-level)
  *       is applied inside; the inner content is emitted verbatim.
  *     * Otherwise, inline directives (e.g. @{{ }}) inside are still processed,
  *       but HTML tags inside are not parsed.
@@ -78,7 +78,7 @@ class Parser
         $makePlaceholder = function (string $type) use (&$counter) {
             return function (string $inner) use (&$counter, $type) {
                 $counter++;
-                $key = "__ZOG_" . strtoupper(trim($type, '@')) . "_" . $counter . "__";
+                $key = "__VIEW_" . strtoupper(trim($type, '@')) . "_" . $counter . "__";
                 Parser::$directivePlaceholders[$key] = [
                     'type' => $type,
                     'inner' => $inner,
@@ -131,7 +131,7 @@ class Parser
      * Streaming compiler over the template string.
      *
      * @param string $template Full template string (with placeholders already injected).
-     * @param bool   $noZog    When true, DOM-level attributes (zp-if, zp-for, ...)
+     * @param bool   $noZog    When true, DOM-level attributes (w-if, w-for, ...)
      *                         are ignored in this subtree; inline directives still work.
      */
     protected static function compileStream(string $template, bool $noZog): string
@@ -195,7 +195,7 @@ class Parser
                 // Unexpected closing tag at this level (should have been consumed inside a parent).
                 if ($i + 1 < $length && $template[$i + 1] === '/') {
                     [$tagName] = self::parseEndTag($template, $i);
-                    throw new ZogTemplateException(
+                    throw new ViewTemplateException(
                         "Unexpected closing tag </{$tagName}> without a matching opening tag."
                     );
                 }
@@ -241,7 +241,7 @@ class Parser
 
                 // Special handling for raw-text elements (<script> and <style>).
                 if (!$selfClosing && ($tagLower === 'script' || $tagLower === 'style')) {
-                    // For <script>/<style>, zp-nozog on the tag itself disables all processing inside.
+                    // For <script>/<style>, w-skip on the tag itself disables all processing inside.
                     $deepNoZog = $tagInfo['nozogElement'];
 
                     [$rawHtml, $endPos] = self::compileRawTextElement(
@@ -277,7 +277,7 @@ class Parser
                     continue;
                 }
 
-                // If we have zp-if / zp-else-if / zp-else, we need to collect the full chain.
+                // If we have w-if / w-else-if / w-else, we need to collect the full chain.
                 if ($zpIf !== null || $zpElseIf !== null || $isZpElse) {
                     [$chainHtml, $endPos] = self::compileIfChainStream(
                         $template,
@@ -293,7 +293,7 @@ class Parser
                     continue;
                 }
 
-                // zp-for: wrap this element in a foreach block.
+                // w-for: wrap this element in a foreach block.
                 if ($zpFor !== null && $zpFor !== '') {
                     [$collectionExpr, $itemVar, $keyVar] = self::parseForExpression($zpFor);
 
@@ -371,12 +371,12 @@ class Parser
         $closeStart = stripos($template, $needle, $innerStartPos);
 
         if ($closeStart === false) {
-            throw new ZogTemplateException("Unclosed <{$tagName}> tag.");
+            throw new ViewTemplateException("Unclosed <{$tagName}> tag.");
         }
 
         $closeEnd = strpos($template, '>', $closeStart);
         if ($closeEnd === false) {
-            throw new ZogTemplateException("Unclosed </{$tagName}> tag.");
+            throw new ViewTemplateException("Unclosed </{$tagName}> tag.");
         }
 
         $innerRaw = substr($template, $innerStartPos, $closeStart - $innerStartPos);
@@ -401,8 +401,8 @@ class Parser
      *  - tag           : string
      *  - attrs         : list<array{name:string,value:?string}>
      *  - selfClosing   : bool
-     *  - nozogElement  : bool (this element has zp-nozog)
-     *  - nozogActive   : bool (parentNozog OR this element has zp-nozog)
+     *  - nozogElement  : bool (this element has w-skip)
+     *  - nozogActive   : bool (parentNozog OR this element has w-skip)
      *  - zpIfExpr      : ?string
      *  - zpElseIfExpr  : ?string
      *  - isZpElse      : bool
@@ -532,26 +532,26 @@ class Parser
             $value = $attr['value'];
             $lname = strtolower($name);
 
-            if ($lname === 'zp-nozog') {
+            if ($lname === 'w-skip') {
                 $isNozogElement = true;
                 $nozogActive = true;
                 continue;
             }
 
             if (!$nozogActive) {
-                if ($lname === 'zp-if') {
+                if ($lname === 'w-if') {
                     $zpIf = $value ?? '';
                     continue;
                 }
-                if ($lname === 'zp-else-if') {
+                if ($lname === 'w-else-if') {
                     $zpElseIf = $value ?? '';
                     continue;
                 }
-                if ($lname === 'zp-else') {
+                if ($lname === 'w-else') {
                     $isZpElse = true;
                     continue;
                 }
-                if ($lname === 'zp-for') {
+                if ($lname === 'w-for') {
                     $zpFor = $value ?? '';
                     continue;
                 }
@@ -631,14 +631,14 @@ class Parser
             $pos = strpos($template, '<', $i);
             if ($pos === false) {
                 // No more tags; the element is never closed.
-                throw new ZogTemplateException("Unclosed <{$tagName}> tag.");
+                throw new ViewTemplateException("Unclosed <{$tagName}> tag.");
             }
 
             // Comment
             if ($pos + 3 < $len && substr($template, $pos, 4) === '<!--') {
                 $endComment = strpos($template, '-->', $pos + 4);
                 if ($endComment === false) {
-                    throw new ZogTemplateException('Unterminated HTML comment inside <' . $tagName . '>.');
+                    throw new ViewTemplateException('Unterminated HTML comment inside <' . $tagName . '>.');
                 }
                 $i = $endComment + 3;
                 continue;
@@ -652,7 +652,7 @@ class Parser
             ) {
                 $declEnd = strpos($template, '>', $pos + 2);
                 if ($declEnd === false) {
-                    throw new ZogTemplateException('Unterminated markup declaration inside <' . $tagName . '>.');
+                    throw new ViewTemplateException('Unterminated markup declaration inside <' . $tagName . '>.');
                 }
                 $i = $declEnd + 1;
                 continue;
@@ -661,7 +661,7 @@ class Parser
             if ($pos + 1 < $len && $template[$pos + 1] === '?') {
                 $phpEnd = strpos($template, '?>', $pos + 2);
                 if ($phpEnd === false) {
-                    throw new ZogTemplateException('Unterminated PHP block inside <' . $tagName . '>.');
+                    throw new ViewTemplateException('Unterminated PHP block inside <' . $tagName . '>.');
                 }
                 $i = $phpEnd + 2;
                 continue;
@@ -697,13 +697,13 @@ class Parser
                 $needle = '</' . $nestedNameLower;
                 $closeStart = stripos($template, $needle, $nestedPos);
                 if ($closeStart === false) {
-                    throw new ZogTemplateException(
+                    throw new ViewTemplateException(
                         "Unclosed <{$nestedTag['tag']}> tag inside <{$tagName}>."
                     );
                 }
                 $closeEnd = strpos($template, '>', $closeStart);
                 if ($closeEnd === false) {
-                    throw new ZogTemplateException(
+                    throw new ViewTemplateException(
                         "Unclosed </{$nestedTag['tag']}> tag inside <{$tagName}>."
                     );
                 }
@@ -718,13 +718,13 @@ class Parser
             $i = $nestedPos;
         }
 
-        throw new ZogTemplateException("Unclosed <{$tagName}> tag.");
+        throw new ViewTemplateException("Unclosed <{$tagName}> tag.");
     }
 
     /**
-     * Compile a zp-if / zp-else-if / zp-else chain starting from the first element.
+     * Compile a w-if / w-else-if / w-else chain starting from the first element.
      *
-     * - $firstTagInfo: info returned by parseStartTag for the initial zp-if element.
+     * - $firstTagInfo: info returned by parseStartTag for the initial w-if element.
      * - $firstOpenHtml / $firstCloseHtml: pre-built opening/closing HTML for the first element.
      *
      * Returns [compiledHtml, newIndex].
@@ -744,7 +744,7 @@ class Parser
         $compileBranch = function (array $tagInfo, string $openHtml, string $closeHtml, int &$pos) use ($template): string {
             $tagName = $tagInfo['tag'];
             if ($tagInfo['selfClosing']) {
-                // self closing elements cannot have inner zp-if logic; just wrap them
+                // self closing elements cannot have inner w-if logic; just wrap them
                 return $openHtml . $closeHtml;
             }
 
@@ -761,7 +761,7 @@ class Parser
             'html' => $compileBranch($firstTagInfo, $firstOpenHtml, $firstCloseHtml, $i),
         ];
 
-        // scan for following zp-else-if / zp-else siblings
+        // scan for following w-else-if / w-else siblings
         while ($i < $len) {
             $savePos = $i;
             $ltPos = strpos($template, '<', $i);
@@ -783,7 +783,7 @@ class Parser
             if ($i + 3 < $len && substr($template, $i, 4) === '<!--') {
                 $endComment = strpos($template, '-->', $i + 4);
                 if ($endComment === false) {
-                    throw new ZogTemplateException('Unterminated HTML comment inside zp-if chain.');
+                    throw new ViewTemplateException('Unterminated HTML comment inside w-if chain.');
                 }
                 $i = $endComment + 3;
                 continue;
@@ -882,9 +882,9 @@ class Parser
         }
 
         // -- restore directive placeholders (if any) --
-        if (strpos($text, '__ZOG_') !== false && !empty(self::$directivePlaceholders)) {
+        if (strpos($text, '__VIEW_') !== false && !empty(self::$directivePlaceholders)) {
             $text = (string) preg_replace_callback(
-                '/__ZOG_[A-Z]+_[0-9]+__/',
+                '/__VIEW_[A-Z]+_[0-9]+__/',
                 function (array $m) {
                     $key = $m[0];
                     if (!isset(Parser::$directivePlaceholders[$key])) {
@@ -898,7 +898,7 @@ class Parser
                     if ($type === '@php') {
                         $code = trim($inner);
                         if ($code === '') {
-                            throw new ZogTemplateException('@php() requires non-empty code.');
+                            throw new ViewTemplateException('@php() requires non-empty code.');
                         }
                         return '<?php ' . $code . ' ?>';
                     }
@@ -910,7 +910,7 @@ class Parser
                     if ($type === '@raw') {
                         $expr = trim($inner);
                         if ($expr === '') {
-                            throw new ZogTemplateException('@raw() requires a non-empty expression.');
+                            throw new ViewTemplateException('@raw() requires a non-empty expression.');
                         }
                         if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $expr) && $expr[0] !== '$') {
                             $expr = '$' . $expr;
@@ -921,25 +921,25 @@ class Parser
                     if ($type === '@section') {
                         $args = trim($inner);
                         if ($args === '') {
-                            throw new ZogTemplateException('@section() requires a section name.');
+                            throw new ViewTemplateException('@section() requires a section name.');
                         }
-                        return '<?php \\Zog\\View::startSection(' . $args . '); ?>';
+                        return '<?php \\Webrium\\View\\View::startSection(' . $args . '); ?>';
                     }
 
                     if ($type === '@yield') {
                         $args = trim($inner);
                         if ($args === '') {
-                            throw new ZogTemplateException('@yield() requires a section name.');
+                            throw new ViewTemplateException('@yield() requires a section name.');
                         }
-                        return '<?php echo \\Zog\\View::yieldSection(' . $args . '); ?>';
+                        return '<?php echo \\Webrium\\View\\View::yieldSection(' . $args . '); ?>';
                     }
 
                     if ($type === '@component') {
                         $args = trim($inner);
                         if ($args === '') {
-                            throw new ZogTemplateException('@component() requires at least a view name.');
+                            throw new ViewTemplateException('@component() requires at least a view name.');
                         }
-                        return '<?php echo \\Zog\\View::component(' . $args . '); ?>';
+                        return '<?php echo \\Webrium\\View\\View::component(' . $args . '); ?>';
                     }
 
                     return $key;
@@ -949,8 +949,8 @@ class Parser
         }
 
         // Enforce raw PHP directive policy (if still present for some reason)
-        if (!Zog::isRawPhpDirectiveAllowed() && strpos($text, '@php(') !== false) {
-            throw new ZogTemplateException('@php directive is disabled for security reasons.');
+        if (!Engine::isRawPhpDirectiveAllowed() && strpos($text, '@php(') !== false) {
+            throw new ViewTemplateException('@php directive is disabled for security reasons.');
         }
 
         // Handle @{{ expr }}  (escaped echo)
@@ -976,7 +976,7 @@ class Parser
         if (strpos($text, '@endsection') !== false) {
             $text = (string) preg_replace(
                 '/@endsection\b/',
-                '<?php \\Zog\\View::endSection(); ?>',
+                '<?php \\Webrium\\View\\View::endSection(); ?>',
                 $text
             );
         }
@@ -987,7 +987,7 @@ class Parser
 
     /**
      * Compile an attribute value so that directives like
-     * @{{ expr }} and protected placeholders (__ZOG_...__)
+     * @{{ expr }} and protected placeholders (__VIEW_...__)
      * also work inside HTML attributes.
      *
      * Examples:
@@ -1044,7 +1044,7 @@ class Parser
             $len = strlen($text);
 
             if ($openParenPos >= $len || $text[$openParenPos] !== '(') {
-                throw new ZogTemplateException("Internal error parsing directive {$token}");
+                throw new ViewTemplateException("Internal error parsing directive {$token}");
             }
 
             // Scan forward and handle PHP-like strings and comments so parentheses inside them are ignored.
@@ -1218,7 +1218,7 @@ class Parser
             }
 
             if ($depth !== 0 || $i >= $len) {
-                throw new ZogTemplateException("Unmatched parentheses in {$token} directive.");
+                throw new ViewTemplateException("Unmatched parentheses in {$token} directive.");
             }
 
             // Inner contents between the outermost (...)
@@ -1245,7 +1245,7 @@ class Parser
     {
         $expr = trim($inner);
         if ($expr === '') {
-            throw new ZogTemplateException('@json() / @tojs() requires a non-empty expression.');
+            throw new ViewTemplateException('@json() / @tojs() requires a non-empty expression.');
         }
 
         // If expr is a bare identifier (like "products"), auto-prefix with $
@@ -1258,7 +1258,7 @@ class Parser
     }
 
     /**
-     * Parse zp-for expression, e.g.:
+     * Parse w-for expression, e.g.:
      *   "product of $products"
      *   "product, key of $products"
      *
@@ -1268,7 +1268,7 @@ class Parser
     {
         $expr = trim($expr);
         if ($expr === '') {
-            throw new ZogTemplateException('Empty zp-for expression.');
+            throw new ViewTemplateException('Empty w-for expression.');
         }
 
         // pattern: item, key of collection   (with optional '$' on item/key)
@@ -1301,7 +1301,7 @@ class Parser
             return [$collectionExpr, $itemVar, null];
         }
 
-        throw new ZogTemplateException('Invalid zp-for expression: ' . $expr);
+        throw new ViewTemplateException('Invalid w-for expression: ' . $expr);
     }
 
     /**
@@ -1311,7 +1311,7 @@ class Parser
     {
         $name = trim($name);
         if ($name === '') {
-            throw new ZogTemplateException('Empty variable name in zp-for expression.');
+            throw new ViewTemplateException('Empty variable name in w-for expression.');
         }
 
         if ($name[0] !== '$') {
@@ -1329,7 +1329,7 @@ class Parser
     {
         $expr = trim($expr);
         if ($expr === '') {
-            throw new ZogTemplateException('Empty PHP expression in template.');
+            throw new ViewTemplateException('Empty PHP expression in template.');
         }
         return $expr;
     }
