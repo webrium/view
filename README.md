@@ -1,58 +1,55 @@
+# Webrium View
 
-# Zog PHP
+Lightweight PHP template engine with hybrid static caching (no `eval`, no `DOMDocument`) for the [Webrium](https://github.com/webrium) framework.
 
-Lightweight PHP template engine with hybrid static caching (no `eval`, no `DOMDocument`).
+- **GitHub:** https://github.com/webrium/view
+- **Packagist:** https://packagist.org/packages/webrium/view
+- **Install:** `composer require webrium/view`
 
-- **GitHub:** https://github.com/zogjs/zog-php  
-- **Packagist:** https://packagist.org/packages/zogjs/zog-php  
-- **Install:** `composer require zogjs/zog-php`
-
-Zog gives you a tiny, framework-agnostic view layer plus an optional static HTML cache in front of it. It compiles your templates to plain PHP files, never uses `eval`, and is designed to play nicely with modern frontend frameworks (Vue, Alpine, Livewire, etc.) by leaving their attributes untouched.
+Webrium View gives you a tiny template engine plus an optional static HTML cache. It compiles your templates to plain PHP files, never uses `eval`, and is designed to play nicely with modern frontend frameworks (Vue, Alpine, Livewire, etc.) by leaving their attributes untouched.
 
 ## Features
 
 - **DOM-less streaming compiler** – custom HTML parser, no `DOMDocument`, so attributes like `@click`, `:class`, `x-data`, `wire:click`, `hx-get`, etc. are preserved exactly as written.
 - **Hybrid static cache** – render a page once, save it as static HTML with a TTL, and serve the static file on future requests.
 - **Blade-style directives** – `@section`, `@yield`, `@component`, `@{{ }}`, `@raw()`, `@json()` / `@tojs()`, `@php()`.
-- **Attribute-based control flow** – `zp-if`, `zp-else-if`, `zp-else`, `zp-for` on normal HTML elements.
-- **Fine-grained opt-out** – `zp-nozog` to disable DOM-level processing in a subtree (useful when embedding another templating system).
+- **Attribute-based control flow** – `w-if`, `w-else-if`, `w-else`, `w-for` on normal HTML elements.
+- **Fine-grained opt-out** – `w-skip` to disable DOM-level processing in a subtree (useful when embedding another templating system).
 - **Safe by default** – escaped output for `@{{ }}`, explicit opt-in to raw HTML and raw PHP.
 
 ## Requirements
 
-- PHP **8.1+** :contentReference[oaicite:0]{index=0}  
+- PHP **8.1+**
 
-No extra PHP extensions are required; Zog uses only core functions.
+No extra PHP extensions are required; Webrium View uses only core functions.
 
 ## Installation
 
 ### 1. Via Composer (recommended)
 
 ```bash
-composer require zogjs/zog-php
-
+composer require webrium/view
+```
 
 Then bootstrap it in your project:
 
 ```php
 <?php
 
-use Zog\Zog;
+use Webrium\View\Engine;
 
 require __DIR__ . '/vendor/autoload.php';
 
-Zog::setViewDir(__DIR__ . '/views');                     // where your .php templates live
-Zog::setStaticDir(__DIR__ . '/static');                  // where hybrid static files are written
-Zog::setCompiledDir(__DIR__ . '/storage/zog_compiled');  // where compiled PHP templates are stored
+Engine::setViewDir(__DIR__ . '/views');                      // where your .php templates live
+Engine::setStaticDir(__DIR__ . '/static');                   // where hybrid static files are written
+Engine::setCompiledDir(__DIR__ . '/storage/view_compiled');  // where compiled PHP templates are stored
 ```
 
 > The directories will be created automatically if they do not exist.
 
 ### 2. Manual install (alternative)
 
-If you prefer not to use Composer, you can copy `Zog.php` and `View.php` into your project, keep the `Zog` namespace, and load them via your own autoloader or simple `require` statements.
-
-Everything else in this README works the same way.
+If you prefer not to use Composer, copy `Engine.php`, `View.php`, and `Parser.php` into your project, keep the `Webrium\View` namespace, and load them via your own autoloader or simple `require` statements.
 
 ## Quick Start
 
@@ -70,13 +67,13 @@ Everything else in this README works the same way.
 ```php
 <?php
 
-use Zog\Zog;
+use Webrium\View\Engine;
 
 require __DIR__ . '/../vendor/autoload.php';
 
-Zog::setViewDir(__DIR__ . '/../views');
+Engine::setViewDir(__DIR__ . '/../views');
 
-echo Zog::render('hello.php', [
+echo Engine::render('hello.php', [
     'name'  => 'Reza',
     'today' => date('Y-m-d'),
 ]);
@@ -119,13 +116,13 @@ echo Zog::render('hello.php', [
 ```php
 <?php
 
-use Zog\Zog;
+use Webrium\View\Engine;
 
 require __DIR__ . '/../vendor/autoload.php';
 
-Zog::setViewDir(__DIR__ . '/../views');
+Engine::setViewDir(__DIR__ . '/../views');
 
-echo Zog::renderLayout(
+echo Engine::renderLayout(
     'layouts/main.php',
     'pages/home.php',
     [
@@ -137,7 +134,7 @@ echo Zog::renderLayout(
 
 ## Template Syntax & Directives
 
-Zog uses a custom streaming HTML parser (not `DOMDocument`). It scans your HTML, rewrites special attributes and directives into plain PHP, and leaves everything else alone.
+Webrium View uses a custom streaming HTML parser (not `DOMDocument`). It scans your HTML, rewrites special attributes and directives into plain PHP, and leaves everything else alone.
 
 ### Escaped output – `@{{ ... }}`
 
@@ -173,46 +170,25 @@ You can inject raw PHP (enabled by default):
 
 ```php
 @php($i = 0)
-
-<ul>
-    @php(for ($i = 0; $i < 3; $i++)):
-        <li>@{{ $i }}</li>
-    @php(endfor;)
-</ul>
 ```
 
 If you want to disable this directive for security reasons:
 
 ```php
-Zog::allowRawPhpDirective(false);
+Engine::allowRawPhpDirective(false);
 ```
 
-Any use of `@php(...)` after that will throw a `ZogTemplateException`.
-
-You can also check the current status:
-
-```php
-if (!Zog::isRawPhpDirectiveAllowed()) {
-    // ...
-}
-```
+Any use of `@php(...)` after that will throw a `ViewTemplateException`.
 
 ### JSON / JavaScript – `@json(...)` and `@tojs(...)`
 
-Both directives are equivalent and produce `json_encode`’d output:
+Both directives are equivalent and produce `json_encode`'d output:
 
 ```php
 <script>
     const items = @json($items);
     const user  = @tojs($user);
 </script>
-```
-
-Compiles roughly to:
-
-```php
-<?php echo json_encode($items, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>
-<?php echo json_encode($user, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>
 ```
 
 You can also use them inside attributes:
@@ -240,9 +216,7 @@ You can also use them inside attributes:
 </body>
 ```
 
-At runtime, `Zog\View` handles section buffering and rendering.
-
-Available helpers in `Zog\View`:
+Available helpers in `Webrium\View\View`:
 
 ```php
 View::startSection($name);
@@ -253,8 +227,6 @@ View::clearSections();
 
 ### Components – `@component(...)`
 
-You can render partials/components from within a template:
-
 ```php
 <div class="card">
     @component('components/user-card.php', ['user' => $user])
@@ -264,18 +236,18 @@ You can render partials/components from within a template:
 Or call it directly from PHP:
 
 ```php
-$html = Zog::component('components/user-card.php', [
+$html = Engine::component('components/user-card.php', [
     'user' => $user,
 ]);
 ```
 
-### Loops – `zp-for`
+### Loops – `w-for`
 
-Use `zp-for` on an element to generate a `foreach`:
+Use `w-for` on an element to generate a `foreach`:
 
 ```php
 <ul>
-    <li zp-for="item, index of $items">
+    <li w-for="item, index of $items">
         @{{ $index }} – @{{ $item }}
     </li>
 </ul>
@@ -286,7 +258,7 @@ Supported forms:
 * `item of $items`
 * `item, key of $items`
 
-Behind the scenes, this becomes approximately:
+Compiles to:
 
 ```php
 <?php foreach ($items as $index => $item): ?>
@@ -294,25 +266,21 @@ Behind the scenes, this becomes approximately:
 <?php endforeach; ?>
 ```
 
-Invalid `zp-for` expressions cause a `ZogTemplateException`.
-
-### Conditionals – `zp-if`, `zp-else-if`, `zp-else`
-
-Chain conditional attributes at the same DOM level:
+### Conditionals – `w-if`, `w-else-if`, `w-else`
 
 ```php
-<p zp-if="$user->isAdmin">
+<p w-if="$user->isAdmin">
     You are an admin.
 </p>
-<p zp-else-if="$user->isModerator">
+<p w-else-if="$user->isModerator">
     You are a moderator.
 </p>
-<p zp-else>
+<p w-else>
     You are a regular user.
 </p>
 ```
 
-Compiles roughly to:
+Compiles to:
 
 ```php
 <?php if ($user->isAdmin): ?>
@@ -324,18 +292,14 @@ Compiles roughly to:
 <?php endif; ?>
 ```
 
-If a `zp-else-if` or `zp-else` is found without a preceding `zp-if` at the same level, a `ZogTemplateException` is thrown.
+### Disabling processing in a subtree – `w-skip`
 
-### Disabling Zog in a subtree – `zp-nozog`
-
-Sometimes you want Zog to leave a part of the DOM untouched, especially when embedding the markup of another templating system or frontend framework.
-
-Add `zp-nozog` to any element to disable **DOM-level** Zog processing for that element and all its descendants:
+Add `w-skip` to any element to disable DOM-level processing for that element and all its descendants:
 
 ```php
-<div zp-nozog>
-    <!-- Zog does NOT compile this zp-if -->
-    <p zp-if="$user->isAdmin">
+<div w-skip>
+    <!-- View does NOT compile this w-if -->
+    <p w-if="$user->isAdmin">
         This will be rendered exactly as-is in the final HTML.
     </p>
 </div>
@@ -343,37 +307,31 @@ Add `zp-nozog` to any element to disable **DOM-level** Zog processing for that e
 
 Behavior:
 
-* Zog does **not** convert `zp-if`, `zp-for`, `zp-else-if`, or `zp-else` inside this subtree into PHP.
-* The attribute `zp-nozog` itself is removed from the final HTML.
-* Inline text directives such as `@{{ $something }}` and `@raw($something)` **still work** in normal elements, because text processing is independent of DOM-level control attributes.
+* `w-if`, `w-for`, `w-else-if`, and `w-else` inside this subtree are **not** converted to PHP.
+* The `w-skip` attribute itself is removed from the final HTML.
+* Inline directives such as `@{{ $something }}` **still work** in text nodes.
 
-This is especially useful when you want to keep attributes for a frontend framework:
+Useful when embedding another frontend framework's attributes:
 
 ```php
-<div zp-nozog>
+<div w-skip>
     <button v-if="isAdmin">Admin button</button>
 </div>
 ```
 
-Zog will not attempt to interpret `v-if="isAdmin"`.
-
 ### `<script>` / `<style>` behavior
 
-`<script>` and `<style>` contents are treated as raw text (not parsed as nested HTML):
+Contents are treated as raw text (not parsed as nested HTML):
 
-* By default, inline Zog directives inside `<script>` / `<style>` **do** work, because the inner text is passed through the same compiler as other text.
-* If you put `zp-nozog` directly on the `<script>` or `<style>` tag, Zog will **not** process anything inside it (no inline directives, no control attributes). The contents are emitted verbatim.
-
-This lets you choose exactly how much Zog should do inside your scripts and styles.
+* By default, inline directives inside `<script>` / `<style>` **do** work.
+* If you put `w-skip` directly on the `<script>` or `<style>` tag, nothing inside is processed and the contents are emitted verbatim.
 
 ## Hybrid Static Cache
-
-Zog’s hybrid cache lets you render a page once, save it as a static file, and serve that file on future requests until a TTL (time to live) expires.
 
 Signature:
 
 ```php
-Zog::hybrid(
+Engine::hybrid(
     string $view,
     string|array $key,
     array|callable|null $dataOrFactory = null,
@@ -384,210 +342,103 @@ Zog::hybrid(
 ### Cache TTL constants
 
 ```php
-use Zog\Zog;
+use Webrium\View\Engine;
 
-Zog::CACHE_NONE;      // 0
-Zog::CACHE_A_MINUTE;
-Zog::CACHE_AN_HOUR;
-Zog::CACHE_A_DAY;
-Zog::CACHE_A_WEEK;
+Engine::CACHE_NONE;
+Engine::CACHE_A_MINUTE;
+Engine::CACHE_AN_HOUR;
+Engine::CACHE_A_DAY;
+Engine::CACHE_A_WEEK;
 ```
 
 You can also override the default TTL:
 
 ```php
-Zog::setDefaultHybridCacheTtl(Zog::CACHE_A_DAY);
+Engine::setDefaultHybridCacheTtl(Engine::CACHE_A_DAY);
 
-// or disable default TTL (TTL must be explicit in hybrid calls)
-Zog::setDefaultHybridCacheTtl(null);
+// or disable default TTL (TTL must be explicit in each hybrid() call)
+Engine::setDefaultHybridCacheTtl(null);
 ```
-
-> Internally, static files start with an HTML comment that holds the expiry date, for example:
-> `<!-- Automatically generated by zog: [ex:2025-12-09] -->`
-> Browsers and search engines ignore this comment; it has no impact on SEO.
 
 ### Mode 1 – Direct data (always re-render)
 
 ```php
-$html = Zog::hybrid(
+$html = Engine::hybrid(
     'pages/home.php',
     'home',
     [
         'title' => 'Home',
         'user'  => $user,
     ],
-    Zog::CACHE_A_HOUR
+    Engine::CACHE_AN_HOUR
 );
 ```
 
-* Always re-renders the view.
-* Writes/overwrites the static file.
-* Returns the rendered HTML (including the header comment).
-
-This mode behaves like `render()` plus “also save the result to a static file”.
-
 ### Mode 2 – Lazy factory (only run when needed)
 
-This is the recommended mode when fetching data from a database or an API:
-
 ```php
-$html = Zog::hybrid(
+$html = Engine::hybrid(
     'pages/home.php',
     'home',
     function () use ($db, $userId) {
-        // This closure is called only when:
-        // - there is no static file, or
-        // - it has expired.
         $user = $db->getUserById($userId);
-
         return [
             'title' => 'Home',
             'user'  => $user,
         ];
     },
-    Zog::CACHE_A_HOUR
+    Engine::CACHE_AN_HOUR
 );
 ```
 
-Workflow:
-
-1. If a valid static file exists and has not expired, Zog:
-
-   * Returns its contents.
-   * Does **not** call the factory.
-
-2. If the file is missing or expired, Zog:
-
-   * Calls the factory.
-   * Expects an `array` of data.
-   * Renders the view.
-   * Writes a new static file with an updated expiry comment.
-   * Returns the fresh HTML.
-
-If the factory does not return an array, Zog throws a `ZogException`.
+The factory is called **only** when no valid cache exists or the cache has expired.
 
 ### Mode 3 – Read-only access
 
-You can check or serve an existing static file without rendering or running any data logic:
-
 ```php
-$content = Zog::hybrid(
-    'pages/home.php',
-    'home',
-    null // read-only mode
-);
+$content = Engine::hybrid('pages/home.php', 'home', null);
 
 if ($content === false) {
-    // no valid cache yet – decide what to do:
-    $content = Zog::render('pages/home.php', [
-        'title' => 'Home',
-        'user'  => $user,
-    ]);
+    $content = Engine::render('pages/home.php', ['title' => 'Home', 'user' => $user]);
 }
 
 echo $content;
 ```
 
-Returns `false` if:
+Returns `false` if no valid (non-expired) cache exists.
 
-* The static file does not exist.
-* The static file is unreadable.
-* The static file is expired or has an invalid expiry comment.
-
-### Static file naming
-
-Static files are stored under the static directory configured with `Zog::setStaticDir()`.
-
-* If `$key` is a **string**, Zog creates a slug-like filename:
-
-  ```text
-  viewName-your-key.php
-  ```
-
-* If `$key` is an **array**, Zog:
-
-  * Normalizes the array (sorts associative keys, recursively).
-  * JSON-encodes it.
-  * Hashes the JSON.
-  * Uses a short `sha1` prefix like:
-
-  ```text
-  viewName-zog-0123456789abcdef.php
-  ```
-
-This guarantees that the same logical key always maps to the same static file.
-
-## Directory Helpers & Static Files
+## Directory Helpers & Clearing Caches
 
 ```php
-use Zog\Zog;
+Engine::setViewDir(__DIR__ . '/views');
+Engine::setStaticDir(__DIR__ . '/static');
+Engine::setCompiledDir(__DIR__ . '/storage/view_compiled');
 
-// Change where views are loaded from
-Zog::setViewDir(__DIR__ . '/views');
+// Remove all static HTML cache files
+Engine::clearStatics();
 
-// Change where static cache files are written
-Zog::setStaticDir(__DIR__ . '/static');
-
-// Change where compiled PHP templates are stored
-Zog::setCompiledDir(__DIR__ . '/storage/zog_compiled');
+// Remove all compiled template files
+Engine::clearCompiled();
 ```
-
-### Clearing caches
-
-```php
-// Remove all static HTML files (does not delete the directory itself)
-Zog::clearStatics();
-
-// Remove all compiled template files (does not delete the directory itself)
-Zog::clearCompiled();
-```
-
-### Reading a static file directly
-
-If you know the relative path to a static file under the static directory, you can read it directly:
-
-```php
-// Equivalent: Zog::staticFile('pages/home-view-zog-abc123.php');
-$content = Zog::static('pages/home-view-zog-abc123.php');
-```
-
-This is mainly useful when you manage some static files yourself, or when you want a very thin wrapper around `file_get_contents()` with path-traversal protection.
 
 ## Error Handling
 
-Zog uses exceptions for all error conditions:
-
-* `ZogException` – base exception for general runtime issues:
-
-  * bad directories
-  * missing view files
-  * I/O failures
-  * invalid hybrid usage
-* `ZogTemplateException` – template compilation errors:
-
-  * invalid `zp-for` / `zp-if` syntax
-  * unmatched parentheses in directives
-  * `zp-else` without a preceding `zp-if`
-  * misuse of section/component directives
-  * disabled `@php()` still being used
-  * unclosed tags in the HTML source
-
-Example:
-
 ```php
 try {
-    echo Zog::render('pages/home.php', ['user' => $user]);
-} catch (\Zog\ZogTemplateException $e) {
-    // render a friendly error page for template errors
-} catch (\Zog\ZogException $e) {
-    // log and render a generic error page
+    echo Engine::render('pages/home.php', ['user' => $user]);
+} catch (\Webrium\View\ViewTemplateException $e) {
+    // template compilation error
+} catch (\Webrium\View\ViewException $e) {
+    // general runtime error
 }
 ```
 
+`ViewException` covers bad directories, missing view files, and I/O failures.
+`ViewTemplateException` covers invalid `w-for` / `w-if` syntax, unclosed tags, unmatched directive parentheses, and disabled `@php()` usage.
 
 ## Editor.js Integration
 
-Zog includes a built-in parser that converts [Editor.js](https://editorjs.io/) JSON output to clean HTML, ready to be rendered inside any Zog template via `@raw()`.
+Webrium View includes a built-in parser that converts [Editor.js](https://editorjs.io/) JSON output to clean HTML.
 
 ### Supported block types
 
@@ -613,39 +464,35 @@ Zog includes a built-in parser that converts [Editor.js](https://editorjs.io/) J
 ### Basic usage
 
 ```php
-use Zog\EditorJs\EditorJsParser;
+use Webrium\View\EditorJs\EditorJsParser;
 
 $parser = new EditorJsParser();
-
-// $json can be a JSON string or a pre-decoded array
-$html = $parser->parse($json);
+$html   = $parser->parse($json); // JSON string or pre-decoded array
 ```
 
-Then render it in a Zog template:
+Then render it in a template:
 
-```html
+```php
 <article>
     @raw($content)
 </article>
 ```
 
-Full example with Zog:
+Full example:
 
 ```php
-use Zog\Zog;
-use Zog\EditorJs\EditorJsParser;
+use Webrium\View\Engine;
+use Webrium\View\EditorJs\EditorJsParser;
 
-Zog::setViewDir(__DIR__ . '/views');
+Engine::setViewDir(__DIR__ . '/views');
 
 $parser  = new EditorJsParser();
 $content = $parser->parse($jsonFromDatabase);
 
-echo Zog::render('pages/article.php', compact('content'));
+echo Engine::render('pages/article.php', compact('content'));
 ```
 
 ### Custom CSS classes
-
-Pass a config array to override the CSS class for any block type:
 
 ```php
 $parser = new EditorJsParser([
@@ -659,14 +506,12 @@ $parser = new EditorJsParser([
         'stretchedClass'  => 'image--stretched',
         'backgroundClass' => 'image--background',
     ],
-    'quote'     => ['class' => 'pullquote', 'captionClass' => 'pullquote__author'],
-    'code'      => ['class' => 'code-block', 'codeClass' => 'language-php'],
+    'quote' => ['class' => 'pullquote', 'captionClass' => 'pullquote__author'],
+    'code'  => ['class' => 'code-block', 'codeClass' => 'language-php'],
 ]);
 ```
 
 ### Registering custom block handlers
-
-If you use custom Editor.js tools, register a handler with a callable:
 
 ```php
 $parser->registerBlock('alert', function (array $data, array $config): string {
@@ -676,34 +521,25 @@ $parser->registerBlock('alert', function (array $data, array $config): string {
 });
 ```
 
-Registered handlers take priority over built-in ones, so you can also override any default block type this way.
-
 ### Inline HTML sanitization
 
-By default the parser allows common inline tags (`<b>`, `<i>`, `<a>`, `<mark>`, `<code>`, `<br>`, `<span>`, etc.) and strips everything else from text fields. To disable sanitization entirely (only do this if you fully trust the content source):
+By default the parser allows common inline tags and strips everything else. To disable sanitization:
 
 ```php
 $parser = new EditorJsParser(config: [], sanitize: false);
 ```
 
-> **Note:** The `raw` block type always passes its HTML through as-is, regardless of the `sanitize` flag. Sanitize or escape its content on the way into the database if needed.
-
+> **Note:** The `raw` block type always passes HTML through as-is, regardless of the `sanitize` flag.
 
 ## Notes
 
-* Zog does **not** use `eval`; compiled templates are normal PHP files that are `require`d.
-* All data passed into `render()` (or via `hybrid()`) is available as:
-
-  * Individual variables (`$user`, `$title`, etc.).
-  * A full array `$zogData` if you prefer to access everything as an array.
-* Zog is intentionally small and framework-agnostic – you can drop it into any PHP project or framework and wire it to your router/controller layer.
+* Webrium View does **not** use `eval`; compiled templates are normal PHP files that are `require`d.
+* All data passed into `render()` is available both as individual variables (`$user`, `$title`, etc.) and as a `$zogData` array inside the template.
 
 ## License
+
 MIT
 
 ## Contributing
 
-* Open issues and pull requests on GitHub.
-* Ideas, bug reports, and feature suggestions are very welcome.
-* Help with documentation and logo/design improvements is also appreciated.
-
+Open issues and pull requests on [GitHub](https://github.com/webrium/view). Ideas, bug reports, and feature suggestions are very welcome.
