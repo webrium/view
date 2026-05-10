@@ -1,19 +1,19 @@
 <?php
 declare(strict_types=1);
 
-namespace Zog\Tests;
+namespace Webrium\View\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Zog\Parser;
-use Zog\Zog;
-use Zog\ZogTemplateException;
+use Webrium\View\Parser;
+use Webrium\View\Engine;
+use Webrium\View\ViewTemplateException;
 
 /**
  * Unit tests for the Zog template Parser (DOM-less version).
  *
  * These tests focus on:
  *  - Inline directives: @{{ }}, @raw(), @php(), @json(), @tojs(), @section(), @yield(), @component()
- *  - DOM-level directives: zp-if / zp-else-if / zp-else, zp-for, zp-nozog
+ *  - DOM-level directives: w-if / w-else-if / w-else, w-for, w-skip
  *  - Special handling for <script> and <style>
  *  - Error handling for invalid HTML (unclosed tags, unexpected closing tags)
  */
@@ -22,8 +22,8 @@ final class ParserTest extends TestCase
     protected function setUp(): void
     {
         // Make sure raw PHP directive is allowed by default.
-        if (method_exists(Zog::class, 'allowRawPhpDirective')) {
-            Zog::allowRawPhpDirective(true);
+        if (method_exists(Engine::class, 'allowRawPhpDirective')) {
+            Engine::allowRawPhpDirective(true);
         }
     }
 
@@ -161,15 +161,15 @@ TPL;
         $compiled = Parser::compile($template);
 
         $this->assertStringContainsString(
-            "<?php \\Zog\\View::startSection('title'); ?>",
+            "<?php \\Webrium\\View\\View::startSection('title'); ?>",
             $compiled
         );
         $this->assertStringContainsString(
-            "<?php \\Zog\\View::endSection(); ?>",
+            "<?php \\Webrium\\View\\View::endSection(); ?>",
             $compiled
         );
         $this->assertStringContainsString(
-            "<?php echo \\Zog\\View::yieldSection('title'); ?>",
+            "<?php echo \\Webrium\\View\\View::yieldSection('title'); ?>",
             $compiled
         );
     }
@@ -181,17 +181,17 @@ TPL;
         $compiled = Parser::compile($template);
 
         $this->assertStringContainsString(
-            "<?php echo \\Zog\\View::component('partials.card', ['title' => 'Hello']); ?>",
+            "<?php echo \\Webrium\\View\\View::component('partials.card', ['title' => 'Hello']); ?>",
             $compiled
         );
     }
 
-    public function testZpIfChainCompilesToPhpIfElse(): void
+    public function testIfChainCompilesToPhpIfElse(): void
     {
         $template = <<<'HTML'
-<div zp-if="$a">A</div>
-<div zp-else-if="$b">B</div>
-<div zp-else>C</div>
+<div w-if="$a">A</div>
+<div w-else-if="$b">B</div>
+<div w-else>C</div>
 HTML;
 
         $compiled = Parser::compile($template);
@@ -208,9 +208,9 @@ HTML;
         $this->assertStringContainsString('<div>C</div>', $compiled);
     }
 
-    public function testZpForGeneratesForeachLoop(): void
+    public function testForGeneratesForeachLoop(): void
     {
-        $template = '<li zp-for="item of $items">@{{ item }}</li>';
+        $template = '<li w-for="item of $items">@{{ item }}</li>';
 
         $compiled = Parser::compile($template);
 
@@ -228,9 +228,9 @@ HTML;
         );
     }
 
-    public function testZpForWithKeyAndItem(): void
+    public function testForWithKeyAndItem(): void
     {
-        $template = '<tr zp-for="row, idx of $rows"><td>@{{ idx }}</td><td>@{{ row }}</td></tr>';
+        $template = '<tr w-for="row, idx of $rows"><td>@{{ idx }}</td><td>@{{ row }}</td></tr>';
 
         $compiled = Parser::compile($template);
 
@@ -248,21 +248,21 @@ HTML;
         );
     }
 
-    public function testZpNozogDisablesDomDirectivesButKeepsInline(): void
+    public function testViewSkipDisablesDomDirectivesButKeepsInline(): void
     {
         $template = <<<'HTML'
-<div zp-nozog>
-    <span zp-if="$cond">@{{ title }}</span>
+<div w-skip>
+    <span w-if="$cond">@{{ title }}</span>
 </div>
 HTML;
 
         $compiled = Parser::compile($template);
 
-        // DOM-level directives inside zp-nozog must NOT be converted to PHP if/endif
+        // DOM-level directives inside w-skip must NOT be converted to PHP if/endif
         $this->assertStringNotContainsString('<?php if (', $compiled);
 
-        // The zp-if attribute must remain in the output
-        $this->assertStringContainsString('<span zp-if="$cond">', $compiled);
+        // The w-if attribute must remain in the output
+        $this->assertStringContainsString('<span w-if="$cond">', $compiled);
 
         // Inline directive @{{ }} should still be processed
         $this->assertStringContainsString(
@@ -295,16 +295,16 @@ HTML;
     public function testScriptTagWithNozogDoesNotProcessInlineDirectives(): void
     {
         $template = <<<'HTML'
-<script zp-nozog>
+<script w-skip>
     console.log("Title:", "@{{ title }}");
 </script>
 HTML;
 
         $compiled = Parser::compile($template);
 
-        // zp-nozog on <script> means deep "no Zog" mode for the content
+        // w-skip on <script> means deep "no Zog" mode for the content
         $this->assertStringContainsString('<script>', $compiled);
-        $this->assertStringNotContainsString('zp-nozog', $compiled); // attribute removed in output
+        $this->assertStringNotContainsString('w-skip', $compiled); // attribute removed in output
 
         // Inline @{{ }} must remain untouched
         $this->assertStringContainsString('@{{ title }}', $compiled);
@@ -316,7 +316,7 @@ HTML;
 
     public function testUnexpectedClosingTagThrowsException(): void
     {
-        $this->expectException(ZogTemplateException::class);
+        $this->expectException(ViewTemplateException::class);
         $this->expectExceptionMessage('Unexpected closing tag');
 
         $template = '</div>';
@@ -326,7 +326,7 @@ HTML;
 
     public function testUnclosedTagThrowsException(): void
     {
-        $this->expectException(ZogTemplateException::class);
+        $this->expectException(ViewTemplateException::class);
         $this->expectExceptionMessage('Unclosed <div> tag');
 
         $template = '<div><span></span>';
@@ -336,7 +336,7 @@ HTML;
 
     public function testUnterminatedCommentInsideElementThrowsException(): void
     {
-        $this->expectException(ZogTemplateException::class);
+        $this->expectException(ViewTemplateException::class);
         $this->expectExceptionMessage('Unterminated HTML comment inside <div>.');
 
         $template = '<div><!-- missing closing comment</div>';
@@ -367,19 +367,19 @@ TPL;
 
     public function testRawPhpDirectivePolicyBlocksLiteralPhpIfNotAllowed(): void
     {
-        // This test assumes that Zog::isRawPhpDirectiveAllowed() is consulted
+        // This test assumes that Engine::isRawPhpDirectiveAllowed() is consulted
         // only for *unprotected* @php( occurrences that remain in the text.
-        if (!method_exists(Zog::class, 'allowRawPhpDirective')) {
-            $this->markTestSkipped('Zog::allowRawPhpDirective() not available.');
+        if (!method_exists(Engine::class, 'allowRawPhpDirective')) {
+            $this->markTestSkipped('Engine::allowRawPhpDirective() not available.');
         }
 
-        Zog::allowRawPhpDirective(false);
+        Engine::allowRawPhpDirective(false);
 
         // Intentionally craft an invalid @php directive that the balanced parser
         // will not fully consume (missing closing parenthesis).
         $template = '@php(echo "missing parenthesis";';
 
-        $this->expectException(ZogTemplateException::class);
+        $this->expectException(ViewTemplateException::class);
         $this->expectExceptionMessage('Unmatched parentheses in @php(');
 
         Parser::compile($template);

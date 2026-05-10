@@ -1,9 +1,9 @@
 <?php
 
-namespace Zog\EditorJs\Tests;
+namespace Webrium\View\EditorJs\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Zog\EditorJs\EditorJsParser;
+use Webrium\View\EditorJs\EditorJsParser;
 
 class EditorJsParserTest extends TestCase
 {
