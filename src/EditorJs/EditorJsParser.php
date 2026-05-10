@@ -1,6 +1,6 @@
 <?php
 
-namespace Zog\EditorJs;
+namespace Webrium\View\EditorJs;
 
 /**
  * EditorJsParser
