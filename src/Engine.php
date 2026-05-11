@@ -23,6 +23,25 @@ namespace Webrium\View;
 
 class ViewException extends \RuntimeException
 {
+    /**
+     * The original (human-readable) view path before compilation.
+     * Set when the exception originates inside a compiled template file.
+     * External error handlers (e.g. Core/Debug) can call getOriginalView()
+     * without importing this class — plain duck-typing is enough.
+     */
+    private string $originalView = '';
+
+    public function setOriginalView(string $view): static
+    {
+        $this->originalView = $view;
+        return $this;
+    }
+
+    /** Returns the original view path, or empty string if not set. */
+    public function getOriginalView(): string
+    {
+        return $this->originalView;
+    }
 }
 
 class ViewTemplateException extends ViewException
@@ -210,7 +229,7 @@ class Engine
         $viewPath     = self::resolveViewPath($view);
         $compiledPath = self::compileViewIfNeeded($viewPath);
 
-        return self::evaluateCompiledFile($compiledPath, $data);
+        return self::evaluateCompiledFile($compiledPath, $data, $viewPath);
     }
 
     /**
@@ -640,7 +659,7 @@ class Engine
      * All keys in $data are extracted as variables.
      * Full array is also available as $zogData inside the template if needed.
      */
-    protected static function evaluateCompiledFile(string $compiledPath, array $data): string
+    protected static function evaluateCompiledFile(string $compiledPath, array $data, string $originalView = ''): string
     {
         $zogData = $data;
 
@@ -654,11 +673,11 @@ class Engine
             })();
         } catch (\Throwable $e) {
             ob_end_clean();
-            throw new ViewException(
-                'Error while rendering template: ' . $e->getMessage(),
+            throw (new ViewException(
+                'Error in view' . ($originalView ? " [{$originalView}]" : '') . ': ' . $e->getMessage(),
                 0,
                 $e
-            );
+            ))->setOriginalView($originalView ?: $compiledPath);
         }
 
         return (string) ob_get_clean();
