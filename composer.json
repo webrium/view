@@ -24,7 +24,10 @@
         "psr-4": {
             "Webrium\\View\\": "src/",
             "Webrium\\View\\EditorJs\\": "src/EditorJs/"
-        }
+        },
+        "files": [
+            "src/helpers.php"
+        ]
     },
     "autoload-dev": {
         "psr-4": {
