@@ -154,22 +154,47 @@ class EditorJsParser
 
     private function list(array $data): string
     {
-        $items = $data['items'] ?? [];
-        $style = ($data['style'] ?? 'unordered') === 'ordered' ? 'ol' : 'ul';
+        $items     = $data['items'] ?? [];
+        $styleAttr = $data['style'] ?? 'unordered';
 
         if (empty($items)) return '';
 
-        $cfg      = $this->config['list'];
-        $class    = $this->classAttr($cfg['class'] ?? '');
-        $itemClass = $this->classAttr($cfg['itemClass'] ?? '');
-
-        $inner = '';
-        foreach ($items as $item) {
-            $text   = is_array($item) ? ($item['content'] ?? '') : $item;
-            $inner .= "<li{$itemClass}>{$this->inlineText($text)}</li>\n";
+        // @editorjs/list v2+ supports style=checklist (checked state lives in item.meta.checked)
+        if ($styleAttr === 'checklist') {
+            return $this->renderChecklistFromList($items);
         }
 
-        return "<{$style}{$class}>\n{$inner}</{$style}>\n";
+        $tag   = $styleAttr === 'ordered' ? 'ol' : 'ul';
+        $cfg   = $this->config['list'];
+        $class = $this->classAttr($cfg['class'] ?? '');
+
+        return "<{$tag}{$class}>\n" . $this->renderNestedItems($items, $tag, $cfg) . "</{$tag}>\n";
+    }
+
+    private function renderChecklistFromList(array $items): string
+    {
+        $cfg          = $this->config['checklist'];
+        $ulClass      = $this->classAttr($cfg['class'] ?? '');
+        $itemClass    = $cfg['itemClass'] ?? '';
+        $checkedClass = $cfg['checkedClass'] ?? '';
+
+        $html = "<ul{$ulClass}>\n";
+
+        foreach ($items as $item) {
+            $text         = $this->inlineText($item['content'] ?? '');
+            $checked      = !empty($item['meta']['checked']);
+            $liClass      = $this->classAttr($itemClass . ($checked && $checkedClass ? " {$checkedClass}" : ''));
+            $checkboxAttr = $checked ? ' checked' : '';
+
+            $html .= "<li{$liClass}><input type=\"checkbox\"{$checkboxAttr} disabled> {$text}</li>\n";
+
+            // Support nested checklist items recursively
+            if (!empty($item['items'])) {
+                $html .= $this->renderChecklistFromList($item['items']);
+            }
+        }
+
+        return $html . "</ul>\n";
     }
 
     private function nestedList(array $data): string
@@ -296,7 +321,8 @@ class EditorJsParser
         $thClass    = $this->classAttr($cfg['thClass'] ?? '');
         $tdClass    = $this->classAttr($cfg['tdClass'] ?? '');
 
-        $html = "<table{$tableClass}>\n";
+        $html      = "<table{$tableClass}>\n";
+        $tbodyOpen = false;
 
         foreach ($content as $rowIndex => $row) {
             if (!is_array($row)) continue;
@@ -306,8 +332,12 @@ class EditorJsParser
                 foreach ($row as $cell) {
                     $html .= "<th{$thClass}>{$this->inlineText($cell)}</th>\n";
                 }
-                $html .= "</tr>\n</thead>\n<tbody>\n";
+                $html .= "</tr>\n</thead>\n";
             } else {
+                if (!$tbodyOpen) {
+                    $html .= "<tbody>\n";
+                    $tbodyOpen = true;
+                }
                 $html .= "<tr>\n";
                 foreach ($row as $cell) {
                     $html .= "<td{$tdClass}>{$this->inlineText($cell)}</td>\n";
@@ -316,7 +346,7 @@ class EditorJsParser
             }
         }
 
-        if ($withHeadings && count($content) > 1) {
+        if ($tbodyOpen) {
             $html .= "</tbody>\n";
         }
 
@@ -406,10 +436,10 @@ class EditorJsParser
         foreach ($items as $item) {
             $text    = $this->inlineText($item['text'] ?? '');
             $checked = !empty($item['checked']);
-            $liClass = $this->classAttr($itemClass . ($checked && $checkedClass ? " {$checkedClass}" : ''));
-            $checkbox = $checked ? 'checked' : '';
+            $liClass      = $this->classAttr($itemClass . ($checked && $checkedClass ? " {$checkedClass}" : ''));
+            $checkboxAttr = $checked ? ' checked' : '';
 
-            $html .= "<li{$liClass}><input type=\"checkbox\" {$checkbox} disabled> {$text}</li>\n";
+            $html .= "<li{$liClass}><input type=\"checkbox\"{$checkboxAttr} disabled> {$text}</li>\n";
         }
 
         return $html . "</ul>\n";
