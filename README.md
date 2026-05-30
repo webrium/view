@@ -247,16 +247,11 @@ Use `w-for` on an element to generate a `foreach`:
 
 ```php
 <ul>
-    <li w-for="item, index of $items">
+    <li w-for="$item, $index of $items">
         @{{ $index }} – @{{ $item }}
     </li>
 </ul>
 ```
-
-Supported forms:
-
-* `item of $items`
-* `item, key of $items`
 
 Compiles to:
 
