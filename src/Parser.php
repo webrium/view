@@ -220,7 +220,11 @@ class Parser
                     $value = $attr['value'];
 
                     if ($value === null) {
-                        $attrHtml .= ' ' . $name;
+                        // Boolean / value-less attribute: still run through compileText
+                        // so that @{{ expr }} used as a dynamic attribute (e.g. @{{ $sel?'selected':'' }})
+                        // gets compiled to a PHP echo.
+                        $compiledName = self::compileAttributeValue($name);
+                        $attrHtml .= ' ' . $compiledName;
                     } else {
                         $compiledValue = self::compileAttributeValue($value);
                         $attrHtml .= ' ' . $name . '="' . $compiledValue . '"';
@@ -278,6 +282,9 @@ class Parser
                 }
 
                 // If we have w-if / w-else-if / w-else, we need to collect the full chain.
+                // When w-for is ALSO present on the same element, the if-condition is the outer
+                // wrapper and the foreach runs inside it — matching PHP alternative syntax:
+                //   if(...): foreach(...): ... endforeach; endif;
                 if ($zpIf !== null || $zpElseIf !== null || $isZpElse) {
                     [$chainHtml, $endPos] = self::compileIfChainStream(
                         $template,
@@ -451,14 +458,40 @@ class Parser
             }
 
             // attribute name
+            // We must treat @{{ ... }} as a single token even though it contains spaces.
             $nameStart = $i;
-            while (
-                $i < $len
-                && !ctype_space($template[$i])
-                && $template[$i] !== '='
-                && $template[$i] !== '>'
-                && !($template[$i] === '/' && $i + 1 < $len && $template[$i + 1] === '>')
-            ) {
+            while ($i < $len) {
+                $c = $template[$i];
+
+                // End of tag
+                if ($c === '>') {
+                    break;
+                }
+                if ($c === '/' && $i + 1 < $len && $template[$i + 1] === '>') {
+                    break;
+                }
+                // Value separator
+                if ($c === '=') {
+                    break;
+                }
+                // Whitespace ends the name — UNLESS we are inside an @{{ }} token
+                if (ctype_space($c)) {
+                    // Peek: are we at the start of @{{ ?  That would be unusual for an attr name,
+                    // but handle it safely. Whitespace simply ends the name here.
+                    break;
+                }
+                // If we see @{{ we consume everything up to and including the closing }}
+                if ($c === '@' && $i + 2 < $len && $template[$i + 1] === '{' && $template[$i + 2] === '{') {
+                    $i += 3; // skip @{{
+                    while ($i < $len) {
+                        if ($template[$i] === '}' && $i + 1 < $len && $template[$i + 1] === '}') {
+                            $i += 2; // skip }}
+                            break;
+                        }
+                        $i++;
+                    }
+                    continue;
+                }
                 $i++;
             }
             $attrName = substr($template, $nameStart, $i - $nameStart);
@@ -486,7 +519,15 @@ class Parser
                     $quote = $ch;
                     $i++;
                     $valStart = $i;
-                    while ($i < $len && $template[$i] !== $quote) {
+                    while ($i < $len) {
+                        if ($template[$i] === '\\' && $i + 1 < $len && $template[$i + 1] === $quote) {
+                            // escaped quote inside attribute value — skip both chars
+                            $i += 2;
+                            continue;
+                        }
+                        if ($template[$i] === $quote) {
+                            break;
+                        }
                         $i++;
                     }
                     $value = substr($template, $valStart, $i - $valStart);
@@ -740,18 +781,35 @@ class Parser
         $i = $posAfterFirstStart;
         $branches = [];
 
-        // helper to compile a single branch element + its inner HTML
+        // helper to compile a single branch element + its inner HTML.
+        // When the element also carries w-for, the foreach wraps the element
+        // inside the already-open if/elseif/else branch, mirroring PHP alternative syntax:
+        //   if(...): foreach(...): <tag>...</tag> endforeach; endif;
         $compileBranch = function (array $tagInfo, string $openHtml, string $closeHtml, int &$pos) use ($template): string {
             $tagName = $tagInfo['tag'];
+
+            // Build the element body (open + inner + close).
             if ($tagInfo['selfClosing']) {
-                // self closing elements cannot have inner w-if logic; just wrap them
-                return $openHtml . $closeHtml;
+                $elementHtml = $openHtml . $closeHtml;
+            } else {
+                $innerInfo = Parser::compileInnerHtml($template, $pos, $tagName);
+                $pos = $innerInfo['endPos'];
+                $innerHtml = Parser::compileStream($innerInfo['innerHtml'], false);
+                $elementHtml = $openHtml . $innerHtml . $closeHtml;
             }
 
-            $innerInfo = Parser::compileInnerHtml($template, $pos, $tagName);
-            $pos = $innerInfo['endPos'];
-            $innerHtml = Parser::compileStream($innerInfo['innerHtml'], false);
-            return $openHtml . $innerHtml . $closeHtml;
+            // If this branch element also has w-for, wrap the element in foreach.
+            $zpFor = $tagInfo['zpForExpr'] ?? null;
+            if ($zpFor !== null && $zpFor !== '') {
+                [$collectionExpr, $itemVar, $keyVar] = Parser::parseForExpression($zpFor);
+                $loopOpen  = '<?php foreach (' . $collectionExpr . ' as '
+                    . ($keyVar ? $keyVar . ' => ' : '')
+                    . $itemVar . '): ?>';
+                $loopClose = '<?php endforeach; ?>';
+                return $loopOpen . $elementHtml . $loopClose;
+            }
+
+            return $elementHtml;
         };
 
         // first branch is always "if"
@@ -814,7 +872,9 @@ class Parser
                 $value = $attr['value'];
 
                 if ($value === null) {
-                    $attrHtml .= ' ' . $name;
+                    // Boolean attribute: compile the name too so @{{ expr }} works
+                    $compiledName = self::compileAttributeValue($name);
+                    $attrHtml .= ' ' . $compiledName;
                 } else {
                     $compiledValue = self::compileAttributeValue($value);
                     $attrHtml .= ' ' . $name . '="' . $compiledValue . '"';
@@ -1264,7 +1324,7 @@ class Parser
      *
      * Returns array [collectionExpr, $itemVar, $keyVarOrNull].
      */
-    protected static function parseForExpression(string $expr): array
+    public static function parseForExpression(string $expr): array
     {
         $expr = trim($expr);
         if ($expr === '') {
