@@ -248,6 +248,54 @@ HTML;
         );
     }
 
+    public function testMultipleDirectivesOnSameLineAttributeAndTernarySelected(): void
+    {
+        $template = '<option value="@{{ $prov->id }}"  @{{ ($province_id === $prov->id) ? \'selected\' : \'\' }}>@{{ $prov->name }}</option>';
+
+        $compiled = Parser::compile($template);
+
+        $this->assertStringContainsString(
+            'value="<?php echo htmlspecialchars($prov->id, ENT_QUOTES, \'UTF-8\'); ?>"',
+            $compiled
+        );
+
+        $this->assertStringContainsString(
+            "<?php echo htmlspecialchars((\$province_id === \$prov->id) ? 'selected' : '', ENT_QUOTES, 'UTF-8'); ?>",
+            $compiled
+        );
+
+        $this->assertStringContainsString(
+            '<?php echo htmlspecialchars($prov->name, ENT_QUOTES, \'UTF-8\'); ?>',
+            $compiled
+        );
+    }
+
+    public function testElementWithBothWIfAndWForAlongsideInlineDirectives(): void
+    {
+        $template = <<<'HTML'
+<option 
+ w-if="$active"  w-for="$prov of $provinces" 
+ value="@{{ $prov->id }}"  @{{ ($province_id === $prov->id) ? 'selected' : '' }} >
+    @{{ $prov->name }}
+</option>
+HTML;
+
+        $compiled = Parser::compile($template);
+
+        // Expect both foreach and if compiled to PHP (order not asserted)
+        $this->assertStringContainsString('<?php foreach ($provinces as $prov): ?>', $compiled);
+        $this->assertStringContainsString('<?php if ($active): ?>', $compiled);
+
+        // Inline interpolations should be processed
+        $this->assertStringContainsString('value="<?php echo htmlspecialchars($prov->id, ENT_QUOTES, \'UTF-8\'); ?>"', $compiled);
+        $this->assertStringContainsString("<?php echo htmlspecialchars((\$province_id === \$prov->id) ? 'selected' : '', ENT_QUOTES, 'UTF-8'); ?>", $compiled);
+        $this->assertStringContainsString('<?php echo htmlspecialchars($prov->name, ENT_QUOTES, \'UTF-8\'); ?>', $compiled);
+
+        // Ensure the PHP blocks are properly closed
+        $this->assertStringContainsString('<?php endif; ?>', $compiled);
+        $this->assertStringContainsString('<?php endforeach; ?>', $compiled);
+    }
+
     public function testViewSkipDisablesDomDirectivesButKeepsInline(): void
     {
         $template = <<<'HTML'
