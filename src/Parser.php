@@ -12,13 +12,14 @@ namespace Webrium\View;
  * - Supports:
  *     @{{ expr }}                    => escaped echo
  *     @raw(expr)                     => raw echo
- *     @php(code)                     => raw PHP (if enabled in Zog)
+ *     @php(code)                     => raw PHP inline (single expression)
+ *     @php ... @endphp               => raw PHP block (multiline)
  *     @json(expr) / @tojs(expr)      => json_encode(...)
  *     @section(name) / @endsection   => View::startSection / View::endSection
  *     @yield(name)                   => View::yieldSection
  *     @component(view, data)         => View::component(...)
  *     w-if / w-else-if / w-else   => if / elseif / else
- *     w-for                         => foreach
+ *     w-for                         => foreach  ($list as $item  /  $list as $key => $item)
  *     w-skip                       => disable DOM-level processing for subtree
  *
  * - On <script> and <style>:
@@ -71,7 +72,12 @@ class Parser
      */
     public static function compile(string $template): string
     {
-        // 1) Protect directive calls with balanced parentheses into placeholders.
+        // Compile @php ... @endphp block directives first, before any other
+        //    processing, so PHP code inside the block is never touched by the
+        //    placeholder or HTML parser.
+        $template = self::compilePhpBlocks($template);
+
+        // Protect directive calls with balanced parentheses into placeholders.
         self::$directivePlaceholders = [];
         $counter = 0;
 
@@ -123,7 +129,7 @@ class Parser
             $makePlaceholder('@component')
         );
 
-        // 2) Compile the template using a streaming parser.
+        // Compile the template using a streaming parser.
         return self::compileStream($template, false);
     }
 
@@ -815,7 +821,7 @@ class Parser
         // first branch is always "if"
         $branches[] = [
             'type' => 'if',
-            'expr' => self::ensurePhpExpression((string) $firstTagInfo['zpIfExpr']),
+            'expr' => trim((string) $firstTagInfo['zpIfExpr']),
             'html' => $compileBranch($firstTagInfo, $firstOpenHtml, $firstCloseHtml, $i),
         ];
 
@@ -887,7 +893,7 @@ class Parser
             if ($tagInfo['zpElseIfExpr'] !== null) {
                 $branches[] = [
                     'type' => 'elseif',
-                    'expr' => self::ensurePhpExpression((string) $tagInfo['zpElseIfExpr']),
+                    'expr' => trim((string) $tagInfo['zpElseIfExpr']),
                     'html' => $compileBranch($tagInfo, $openHtml, $closeHtml, $i),
                 ];
                 continue;
@@ -927,6 +933,123 @@ class Parser
         $out .= '<?php endif; ?>';
 
         return [$out, $i];
+    }
+
+    /**
+     * Compile @php ... @endphp block directives.
+     *
+     * The entire block — including its PHP body — is replaced with a single
+     * <?php ... ?> tag before any other parsing takes place, so the HTML
+     * parser and placeholder system never see the PHP code inside.
+     *
+     * Syntax:
+     *   @php
+     *   // any PHP code here
+     *   $x = 1;
+     *   @endphp
+     *
+     * Rules:
+     *   - @php must be the only non-whitespace content on its line.
+     *   - @endphp must be the only non-whitespace content on its line.
+     *   - Nesting @php inside @php is not supported and will throw.
+     *   - An empty block (@php immediately followed by @endphp) is allowed
+     *     but produces no output.
+     */
+    protected static function compilePhpBlocks(string $template): string
+    {
+        // Fast path — no block directives present.
+        if (stripos($template, '@php') === false) {
+            return $template;
+        }
+
+        $out    = '';
+        $len    = strlen($template);
+        $offset = 0;
+
+        while ($offset < $len) {
+            // Find the next @php that appears alone on its line.
+            $found = preg_match(
+                '/^[ \t]*@php[ \t]*$/im',
+                $template,
+                $openMatch,
+                PREG_OFFSET_CAPTURE,
+                $offset
+            );
+
+            if (!$found) {
+                // No more @php blocks — append the remainder and stop.
+                $out .= substr($template, $offset);
+                break;
+            }
+
+            $openStart = $openMatch[0][1];         // byte offset of the matched line start
+            $openEnd   = $openStart + strlen($openMatch[0][0]); // byte offset after the matched line
+
+            // Guard against nested @php blocks in the text before this block.
+            $before = substr($template, $offset, $openStart - $offset);
+            if (preg_match('/^[ \t]*@php[ \t]*$/im', $before)) {
+                throw new ViewTemplateException(
+                    'Nested @php blocks are not supported.'
+                );
+            }
+
+            // Append everything before this @php tag.
+            $out .= $before;
+
+            // Consume the newline that follows @php (if any).
+            $bodyStart = $openEnd;
+            if ($bodyStart < $len && $template[$bodyStart] === "\r") {
+                $bodyStart++;
+            }
+            if ($bodyStart < $len && $template[$bodyStart] === "\n") {
+                $bodyStart++;
+            }
+
+            // Find the matching @endphp on its own line.
+            $foundEnd = preg_match(
+                '/^[ \t]*@endphp[ \t]*$/im',
+                $template,
+                $closeMatch,
+                PREG_OFFSET_CAPTURE,
+                $bodyStart
+            );
+
+            if (!$foundEnd) {
+                throw new ViewTemplateException(
+                    '@php block opened but @endphp was never found.'
+                );
+            }
+
+            $closeStart = $closeMatch[0][1];
+            $closeEnd   = $closeStart + strlen($closeMatch[0][0]);
+
+            // The PHP body is everything between the two markers.
+            $body = substr($template, $bodyStart, $closeStart - $bodyStart);
+
+            // Trim only trailing newline from body so indentation is preserved.
+            $body = rtrim($body, "\r\n");
+
+            if (!Engine::isRawPhpDirectiveAllowed()) {
+                throw new ViewTemplateException(
+                    '@php directive is disabled for security reasons.'
+                );
+            }
+
+            if (trim($body) !== '') {
+                $out .= '<?php ' . "\n" . $body . "\n" . '?>';
+            }
+
+            // Consume the newline after @endphp (if any) to avoid blank lines.
+            $offset = $closeEnd;
+            if ($offset < $len && $template[$offset] === "\r") {
+                $offset++;
+            }
+            if ($offset < $len && $template[$offset] === "\n") {
+                $offset++;
+            }
+        }
+
+        return $out;
     }
 
     /**
@@ -972,9 +1095,6 @@ class Parser
                         if ($expr === '') {
                             throw new ViewTemplateException('@raw() requires a non-empty expression.');
                         }
-                        if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $expr) && $expr[0] !== '$') {
-                            $expr = '$' . $expr;
-                        }
                         return '<?php echo ' . $expr . '; ?>';
                     }
 
@@ -1008,9 +1128,11 @@ class Parser
             );
         }
 
-        // Enforce raw PHP directive policy (if still present for some reason)
-        if (!Engine::isRawPhpDirectiveAllowed() && strpos($text, '@php(') !== false) {
-            throw new ViewTemplateException('@php directive is disabled for security reasons.');
+        // Enforce raw PHP directive policy
+        if (!Engine::isRawPhpDirectiveAllowed()) {
+            if (strpos($text, '@php(') !== false || strpos($text, '@php') !== false) {
+                throw new ViewTemplateException('@php directive is disabled for security reasons.');
+            }
         }
 
         // Handle @{{ expr }}  (escaped echo)
@@ -1020,11 +1142,6 @@ class Parser
                 $expr = trim($m[1]);
                 if ($expr === '') {
                     return '';
-                }
-
-                // If expr is a bare identifier, auto-prefix with $
-                if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $expr) && $expr[0] !== '$') {
-                    $expr = '$' . $expr;
                 }
 
                 return '<?php echo htmlspecialchars(' . $expr . ", ENT_QUOTES, 'UTF-8'); ?>";
@@ -1308,21 +1425,18 @@ class Parser
             throw new ViewTemplateException('@json() / @tojs() requires a non-empty expression.');
         }
 
-        // If expr is a bare identifier (like "products"), auto-prefix with $
-        if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $expr) && $expr[0] !== '$') {
-            $expr = '$' . $expr;
-        }
-
         return '<?php echo json_encode(' . $expr
             . ', JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>';
     }
 
     /**
-     * Parse w-for expression, e.g.:
-     *   "product of $products"
-     *   "product, key of $products"
+     * Parse a w-for attribute value using PHP foreach syntax.
      *
-     * Returns array [collectionExpr, $itemVar, $keyVarOrNull].
+     * Accepted forms:
+     *   "$items as $item"
+     *   "$items as $key => $item"
+     *
+     * Returns array [$collectionExpr, $itemVar, $keyVarOrNull].
      */
     public static function parseForExpression(string $expr): array
     {
@@ -1331,66 +1445,19 @@ class Parser
             throw new ViewTemplateException('Empty w-for expression.');
         }
 
-        // pattern: item, key of collection   (with optional '$' on item/key)
-        if (
-            preg_match(
-                '/^\$?([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$?([A-Za-z_][A-Za-z0-9_]*)\s+of\s+(.+)$/',
-                $expr,
-                $m
-            )
-        ) {
-            // ensurePhpVariable adds the '$' prefix when needed
-            $itemVar = self::ensurePhpVariable($m[1]);
-            $keyVar = self::ensurePhpVariable($m[2]);
-            $collectionExpr = self::ensurePhpExpression($m[3]);
-
-            return [$collectionExpr, $itemVar, $keyVar];
+        // $collection as $key => $value
+        if (preg_match('/^(.+)\s+as\s+(\$[A-Za-z_][A-Za-z0-9_]*)\s*=>\s*(\$[A-Za-z_][A-Za-z0-9_]*)$/', $expr, $m)) {
+            return [trim($m[1]), $m[3], $m[2]];
         }
 
-        // pattern: item of collection (with optional '$' on item)
-        if (
-            preg_match(
-                '/^\$?([A-Za-z_][A-Za-z0-9_]*)\s+of\s+(.+)$/',
-                $expr,
-                $m
-            )
-        ) {
-            $itemVar = self::ensurePhpVariable($m[1]);
-            $collectionExpr = self::ensurePhpExpression($m[2]);
-
-            return [$collectionExpr, $itemVar, null];
+        // $collection as $value
+        if (preg_match('/^(.+)\s+as\s+(\$[A-Za-z_][A-Za-z0-9_]*)$/', $expr, $m)) {
+            return [trim($m[1]), $m[2], null];
         }
 
-        throw new ViewTemplateException('Invalid w-for expression: ' . $expr);
-    }
-
-    /**
-     * Ensure a variable name is prefixed with '$'.
-     */
-    protected static function ensurePhpVariable(string $name): string
-    {
-        $name = trim($name);
-        if ($name === '') {
-            throw new ViewTemplateException('Empty variable name in w-for expression.');
-        }
-
-        if ($name[0] !== '$') {
-            $name = '$' . $name;
-        }
-
-        return $name;
-    }
-
-    /**
-     * Ensure a PHP expression is non-empty.
-     * (Caller is responsible for making it syntactically valid PHP.)
-     */
-    protected static function ensurePhpExpression(string $expr): string
-    {
-        $expr = trim($expr);
-        if ($expr === '') {
-            throw new ViewTemplateException('Empty PHP expression in template.');
-        }
-        return $expr;
+        throw new ViewTemplateException(
+            'Invalid w-for expression: "' . $expr . '". '
+            . 'Expected "$list as $item" or "$list as $key => $item".'
+        );
     }
 }
