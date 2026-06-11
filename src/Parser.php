@@ -12,7 +12,8 @@ namespace Webrium\View;
  * - Supports:
  *     @{{ expr }}                    => escaped echo
  *     @raw(expr)                     => raw echo
- *     @php(code)                     => raw PHP (if enabled in Zog)
+ *     @php(code)                     => raw PHP inline (single expression)
+ *     @php ... @endphp               => raw PHP block (multiline)
  *     @json(expr) / @tojs(expr)      => json_encode(...)
  *     @section(name) / @endsection   => View::startSection / View::endSection
  *     @yield(name)                   => View::yieldSection
@@ -71,7 +72,12 @@ class Parser
      */
     public static function compile(string $template): string
     {
-        // 1) Protect directive calls with balanced parentheses into placeholders.
+        // Compile @php ... @endphp block directives first, before any other
+        //    processing, so PHP code inside the block is never touched by the
+        //    placeholder or HTML parser.
+        $template = self::compilePhpBlocks($template);
+
+        // Protect directive calls with balanced parentheses into placeholders.
         self::$directivePlaceholders = [];
         $counter = 0;
 
@@ -123,7 +129,7 @@ class Parser
             $makePlaceholder('@component')
         );
 
-        // 2) Compile the template using a streaming parser.
+        // Compile the template using a streaming parser.
         return self::compileStream($template, false);
     }
 
@@ -930,6 +936,123 @@ class Parser
     }
 
     /**
+     * Compile @php ... @endphp block directives.
+     *
+     * The entire block — including its PHP body — is replaced with a single
+     * <?php ... ?> tag before any other parsing takes place, so the HTML
+     * parser and placeholder system never see the PHP code inside.
+     *
+     * Syntax:
+     *   @php
+     *   // any PHP code here
+     *   $x = 1;
+     *   @endphp
+     *
+     * Rules:
+     *   - @php must be the only non-whitespace content on its line.
+     *   - @endphp must be the only non-whitespace content on its line.
+     *   - Nesting @php inside @php is not supported and will throw.
+     *   - An empty block (@php immediately followed by @endphp) is allowed
+     *     but produces no output.
+     */
+    protected static function compilePhpBlocks(string $template): string
+    {
+        // Fast path — no block directives present.
+        if (stripos($template, '@php') === false) {
+            return $template;
+        }
+
+        $out    = '';
+        $len    = strlen($template);
+        $offset = 0;
+
+        while ($offset < $len) {
+            // Find the next @php that appears alone on its line.
+            $found = preg_match(
+                '/^[ \t]*@php[ \t]*$/im',
+                $template,
+                $openMatch,
+                PREG_OFFSET_CAPTURE,
+                $offset
+            );
+
+            if (!$found) {
+                // No more @php blocks — append the remainder and stop.
+                $out .= substr($template, $offset);
+                break;
+            }
+
+            $openStart = $openMatch[0][1];         // byte offset of the matched line start
+            $openEnd   = $openStart + strlen($openMatch[0][0]); // byte offset after the matched line
+
+            // Guard against nested @php blocks in the text before this block.
+            $before = substr($template, $offset, $openStart - $offset);
+            if (preg_match('/^[ \t]*@php[ \t]*$/im', $before)) {
+                throw new ViewTemplateException(
+                    'Nested @php blocks are not supported.'
+                );
+            }
+
+            // Append everything before this @php tag.
+            $out .= $before;
+
+            // Consume the newline that follows @php (if any).
+            $bodyStart = $openEnd;
+            if ($bodyStart < $len && $template[$bodyStart] === "\r") {
+                $bodyStart++;
+            }
+            if ($bodyStart < $len && $template[$bodyStart] === "\n") {
+                $bodyStart++;
+            }
+
+            // Find the matching @endphp on its own line.
+            $foundEnd = preg_match(
+                '/^[ \t]*@endphp[ \t]*$/im',
+                $template,
+                $closeMatch,
+                PREG_OFFSET_CAPTURE,
+                $bodyStart
+            );
+
+            if (!$foundEnd) {
+                throw new ViewTemplateException(
+                    '@php block opened but @endphp was never found.'
+                );
+            }
+
+            $closeStart = $closeMatch[0][1];
+            $closeEnd   = $closeStart + strlen($closeMatch[0][0]);
+
+            // The PHP body is everything between the two markers.
+            $body = substr($template, $bodyStart, $closeStart - $bodyStart);
+
+            // Trim only trailing newline from body so indentation is preserved.
+            $body = rtrim($body, "\r\n");
+
+            if (!Engine::isRawPhpDirectiveAllowed()) {
+                throw new ViewTemplateException(
+                    '@php directive is disabled for security reasons.'
+                );
+            }
+
+            if (trim($body) !== '') {
+                $out .= '<?php ' . "\n" . $body . "\n" . '?>';
+            }
+
+            // Consume the newline after @endphp (if any) to avoid blank lines.
+            $offset = $closeEnd;
+            if ($offset < $len && $template[$offset] === "\r") {
+                $offset++;
+            }
+            if ($offset < $len && $template[$offset] === "\n") {
+                $offset++;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * Compile plain text node content:
      *   - placeholders for protected directives are restored here
      *   - @{{ expr }}               => escaped echo
@@ -1005,9 +1128,11 @@ class Parser
             );
         }
 
-        // Enforce raw PHP directive policy (if still present for some reason)
-        if (!Engine::isRawPhpDirectiveAllowed() && strpos($text, '@php(') !== false) {
-            throw new ViewTemplateException('@php directive is disabled for security reasons.');
+        // Enforce raw PHP directive policy
+        if (!Engine::isRawPhpDirectiveAllowed()) {
+            if (strpos($text, '@php(') !== false || strpos($text, '@php') !== false) {
+                throw new ViewTemplateException('@php directive is disabled for security reasons.');
+            }
         }
 
         // Handle @{{ expr }}  (escaped echo)

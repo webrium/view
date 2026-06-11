@@ -412,6 +412,107 @@ TPL;
         $this->assertStringContainsString('?>', $compiled);
     }
 
+    public function testPhpBlockDirectiveCompilesMultilineCode(): void
+    {
+        $template = <<<'TPL'
+<div>
+@php
+$greeting = 'Hello';
+$count    = count($items);
+@endphp
+<p>@{{ $greeting }}</p>
+</div>
+TPL;
+
+        $compiled = Parser::compile($template);
+
+        $this->assertStringContainsString('<?php', $compiled);
+        $this->assertStringContainsString("\$greeting = 'Hello';", $compiled);
+        $this->assertStringContainsString('$count    = count($items);', $compiled);
+        $this->assertStringContainsString('?>', $compiled);
+
+        // The markers themselves must not appear in the output.
+        $this->assertStringNotContainsString('@php', $compiled);
+        $this->assertStringNotContainsString('@endphp', $compiled);
+    }
+
+    public function testPhpBlockAndInlinePhpCanCoexist(): void
+    {
+        $template = <<<'TPL'
+@php
+$x = 10;
+@endphp
+@php($y = 20)
+Result: @{{ $x + $y }}
+TPL;
+
+        $compiled = Parser::compile($template);
+
+        $this->assertStringContainsString('$x = 10;', $compiled);
+        $this->assertStringContainsString('<?php $y = 20 ?>', $compiled);
+        $this->assertStringNotContainsString('@php', $compiled);
+        $this->assertStringNotContainsString('@endphp', $compiled);
+    }
+
+    public function testPhpBlockWithIndentedCode(): void
+    {
+        $template = <<<'TPL'
+@php
+    $items = array_filter($raw, fn($i) => $i['active']);
+    $total = array_sum(array_column($items, 'price'));
+@endphp
+TPL;
+
+        $compiled = Parser::compile($template);
+
+        $this->assertStringContainsString(
+            "\$items = array_filter(\$raw, fn(\$i) => \$i['active']);",
+            $compiled
+        );
+        $this->assertStringContainsString(
+            '$total = array_sum(array_column($items, \'price\'));',
+            $compiled
+        );
+    }
+
+    public function testEmptyPhpBlockProducesNoOutput(): void
+    {
+        $template = "<p>before</p>\n@php\n@endphp\n<p>after</p>";
+
+        $compiled = Parser::compile($template);
+
+        $this->assertStringNotContainsString('@php', $compiled);
+        $this->assertStringNotContainsString('@endphp', $compiled);
+        $this->assertStringContainsString('<p>before</p>', $compiled);
+        $this->assertStringContainsString('<p>after</p>', $compiled);
+    }
+
+    public function testUnclosedPhpBlockThrowsException(): void
+    {
+        $this->expectException(ViewTemplateException::class);
+        $this->expectExceptionMessage('@php block opened but @endphp was never found');
+
+        $template = "@php\n\$x = 1;\n";
+
+        Parser::compile($template);
+    }
+
+    public function testPhpBlockDisabledByPolicyThrowsException(): void
+    {
+        if (!method_exists(Engine::class, 'allowRawPhpDirective')) {
+            $this->markTestSkipped('Engine::allowRawPhpDirective() not available.');
+        }
+
+        Engine::allowRawPhpDirective(false);
+
+        $this->expectException(ViewTemplateException::class);
+        $this->expectExceptionMessage('@php directive is disabled');
+
+        $template = "@php\n\$x = 1;\n@endphp";
+
+        Parser::compile($template);
+    }
+
     public function testRawPhpDirectivePolicyBlocksLiteralPhpIfNotAllowed(): void
     {
         // This test assumes that Engine::isRawPhpDirectiveAllowed() is consulted
