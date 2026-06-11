@@ -18,7 +18,7 @@ namespace Webrium\View;
  *     @yield(name)                   => View::yieldSection
  *     @component(view, data)         => View::component(...)
  *     w-if / w-else-if / w-else   => if / elseif / else
- *     w-for                         => foreach
+ *     w-for                         => foreach  ($list as $item  /  $list as $key => $item)
  *     w-skip                       => disable DOM-level processing for subtree
  *
  * - On <script> and <style>:
@@ -815,7 +815,7 @@ class Parser
         // first branch is always "if"
         $branches[] = [
             'type' => 'if',
-            'expr' => self::ensurePhpExpression((string) $firstTagInfo['zpIfExpr']),
+            'expr' => trim((string) $firstTagInfo['zpIfExpr']),
             'html' => $compileBranch($firstTagInfo, $firstOpenHtml, $firstCloseHtml, $i),
         ];
 
@@ -887,7 +887,7 @@ class Parser
             if ($tagInfo['zpElseIfExpr'] !== null) {
                 $branches[] = [
                     'type' => 'elseif',
-                    'expr' => self::ensurePhpExpression((string) $tagInfo['zpElseIfExpr']),
+                    'expr' => trim((string) $tagInfo['zpElseIfExpr']),
                     'html' => $compileBranch($tagInfo, $openHtml, $closeHtml, $i),
                 ];
                 continue;
@@ -972,9 +972,6 @@ class Parser
                         if ($expr === '') {
                             throw new ViewTemplateException('@raw() requires a non-empty expression.');
                         }
-                        if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $expr) && $expr[0] !== '$') {
-                            $expr = '$' . $expr;
-                        }
                         return '<?php echo ' . $expr . '; ?>';
                     }
 
@@ -1020,11 +1017,6 @@ class Parser
                 $expr = trim($m[1]);
                 if ($expr === '') {
                     return '';
-                }
-
-                // If expr is a bare identifier, auto-prefix with $
-                if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $expr) && $expr[0] !== '$') {
-                    $expr = '$' . $expr;
                 }
 
                 return '<?php echo htmlspecialchars(' . $expr . ", ENT_QUOTES, 'UTF-8'); ?>";
@@ -1308,21 +1300,18 @@ class Parser
             throw new ViewTemplateException('@json() / @tojs() requires a non-empty expression.');
         }
 
-        // If expr is a bare identifier (like "products"), auto-prefix with $
-        if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $expr) && $expr[0] !== '$') {
-            $expr = '$' . $expr;
-        }
-
         return '<?php echo json_encode(' . $expr
             . ', JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>';
     }
 
     /**
-     * Parse w-for expression, e.g.:
-     *   "product of $products"
-     *   "product, key of $products"
+     * Parse a w-for attribute value using PHP foreach syntax.
      *
-     * Returns array [collectionExpr, $itemVar, $keyVarOrNull].
+     * Accepted forms:
+     *   "$items as $item"
+     *   "$items as $key => $item"
+     *
+     * Returns array [$collectionExpr, $itemVar, $keyVarOrNull].
      */
     public static function parseForExpression(string $expr): array
     {
@@ -1331,66 +1320,19 @@ class Parser
             throw new ViewTemplateException('Empty w-for expression.');
         }
 
-        // pattern: item, key of collection   (with optional '$' on item/key)
-        if (
-            preg_match(
-                '/^\$?([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$?([A-Za-z_][A-Za-z0-9_]*)\s+of\s+(.+)$/',
-                $expr,
-                $m
-            )
-        ) {
-            // ensurePhpVariable adds the '$' prefix when needed
-            $itemVar = self::ensurePhpVariable($m[1]);
-            $keyVar = self::ensurePhpVariable($m[2]);
-            $collectionExpr = self::ensurePhpExpression($m[3]);
-
-            return [$collectionExpr, $itemVar, $keyVar];
+        // $collection as $key => $value
+        if (preg_match('/^(.+)\s+as\s+(\$[A-Za-z_][A-Za-z0-9_]*)\s*=>\s*(\$[A-Za-z_][A-Za-z0-9_]*)$/', $expr, $m)) {
+            return [trim($m[1]), $m[3], $m[2]];
         }
 
-        // pattern: item of collection (with optional '$' on item)
-        if (
-            preg_match(
-                '/^\$?([A-Za-z_][A-Za-z0-9_]*)\s+of\s+(.+)$/',
-                $expr,
-                $m
-            )
-        ) {
-            $itemVar = self::ensurePhpVariable($m[1]);
-            $collectionExpr = self::ensurePhpExpression($m[2]);
-
-            return [$collectionExpr, $itemVar, null];
+        // $collection as $value
+        if (preg_match('/^(.+)\s+as\s+(\$[A-Za-z_][A-Za-z0-9_]*)$/', $expr, $m)) {
+            return [trim($m[1]), $m[2], null];
         }
 
-        throw new ViewTemplateException('Invalid w-for expression: ' . $expr);
-    }
-
-    /**
-     * Ensure a variable name is prefixed with '$'.
-     */
-    protected static function ensurePhpVariable(string $name): string
-    {
-        $name = trim($name);
-        if ($name === '') {
-            throw new ViewTemplateException('Empty variable name in w-for expression.');
-        }
-
-        if ($name[0] !== '$') {
-            $name = '$' . $name;
-        }
-
-        return $name;
-    }
-
-    /**
-     * Ensure a PHP expression is non-empty.
-     * (Caller is responsible for making it syntactically valid PHP.)
-     */
-    protected static function ensurePhpExpression(string $expr): string
-    {
-        $expr = trim($expr);
-        if ($expr === '') {
-            throw new ViewTemplateException('Empty PHP expression in template.');
-        }
-        return $expr;
+        throw new ViewTemplateException(
+            'Invalid w-for expression: "' . $expr . '". '
+            . 'Expected "$list as $item" or "$list as $key => $item".'
+        );
     }
 }
