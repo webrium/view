@@ -55,7 +55,7 @@ HTML;
 
     public function testTextOnlyTemplateWithEscapedDirective(): void
     {
-        $template = 'Hello @{{ name }}!';
+        $template = 'Hello @{{ $name }}!';
 
         $compiled = Parser::compile($template);
 
@@ -67,7 +67,7 @@ HTML;
 
     public function testEscapedDirectiveInsideHtmlTag(): void
     {
-        $template = '<p>Hello @{{ userName }}</p>';
+        $template = '<p>Hello @{{ $userName }}</p>';
 
         $compiled = Parser::compile($template);
 
@@ -79,22 +79,21 @@ HTML;
         $this->assertStringContainsString('</p>', $compiled);
     }
 
-    public function testRawDirectiveWithBareIdentifier(): void
+    public function testRawDirectiveWithExplicitDollarSign(): void
     {
-        $template = 'Value: @raw(totalAmount)';
+        $template = 'Value: @raw($totalAmount)';
 
         $compiled = Parser::compile($template);
 
-        // @raw(totalAmount) should become an unescaped echo of $totalAmount
         $this->assertStringContainsString(
             'Value: <?php echo $totalAmount; ?>',
             $compiled
         );
     }
 
-    public function testJsonDirectiveWithBareIdentifier(): void
+    public function testJsonDirectiveWithExplicitDollarSign(): void
     {
-        $template = '@json(products)';
+        $template = '@json($products)';
 
         $compiled = Parser::compile($template);
 
@@ -210,7 +209,7 @@ HTML;
 
     public function testForGeneratesForeachLoop(): void
     {
-        $template = '<li w-for="item of $items">@{{ item }}</li>';
+        $template = '<li w-for="$items as $item">@{{ $item }}</li>';
 
         $compiled = Parser::compile($template);
 
@@ -230,7 +229,7 @@ HTML;
 
     public function testForWithKeyAndItem(): void
     {
-        $template = '<tr w-for="row, idx of $rows"><td>@{{ idx }}</td><td>@{{ row }}</td></tr>';
+        $template = '<tr w-for="$rows as $idx => $row"><td>@{{ $idx }}</td><td>@{{ $row }}</td></tr>';
 
         $compiled = Parser::compile($template);
 
@@ -274,7 +273,7 @@ HTML;
     {
         $template = <<<'HTML'
 <option 
- w-if="$active"  w-for="$prov of $provinces" 
+ w-if="$active"  w-for="$provinces as $prov" 
  value="@{{ $prov->id }}"  @{{ ($province_id === $prov->id) ? 'selected' : '' }} >
     @{{ $prov->name }}
 </option>
@@ -300,7 +299,7 @@ HTML;
     {
         $template = <<<'HTML'
 <div w-skip>
-    <span w-if="$cond">@{{ title }}</span>
+    <span w-if="$cond">@{{ $title }}</span>
 </div>
 HTML;
 
@@ -323,7 +322,7 @@ HTML;
     {
         $template = <<<'HTML'
 <script>
-    console.log("Title:", "@{{ title }}");
+    console.log("Title:", "@{{ $title }}");
 </script>
 HTML;
 
@@ -344,7 +343,7 @@ HTML;
     {
         $template = <<<'HTML'
 <script w-skip>
-    console.log("Title:", "@{{ title }}");
+    console.log("Title:", "@{{ $title }}");
 </script>
 HTML;
 
@@ -355,7 +354,7 @@ HTML;
         $this->assertStringNotContainsString('w-skip', $compiled); // attribute removed in output
 
         // Inline @{{ }} must remain untouched
-        $this->assertStringContainsString('@{{ title }}', $compiled);
+        $this->assertStringContainsString('@{{ $title }}', $compiled);
         $this->assertStringNotContainsString(
             '<?php echo htmlspecialchars($title',
             $compiled
