@@ -6,13 +6,13 @@ Lightweight PHP template engine with hybrid static caching (no `eval`, no `DOMDo
 - **Packagist:** https://packagist.org/packages/webrium/view
 - **Install:** `composer require webrium/view`
 
-Webrium View gives you a tiny template engine plus an optional static HTML cache. It compiles your templates to plain PHP files, never uses `eval`, and is designed to play nicely with modern frontend frameworks (Vue, Alpine, Livewire, etc.) by leaving their attributes untouched.
+Webrium View compiles your templates to plain PHP files, never uses `eval`, and is designed to play nicely with modern frontend frameworks (Vue, Alpine, Livewire, etc.) by leaving their attributes untouched.
 
 ## Features
 
 - **DOM-less streaming compiler** – custom HTML parser, no `DOMDocument`, so attributes like `@click`, `:class`, `x-data`, `wire:click`, `hx-get`, etc. are preserved exactly as written.
 - **Hybrid static cache** – render a page once, save it as static HTML with a TTL, and serve the static file on future requests.
-- **Blade-style directives** – `@section`, `@yield`, `@component`, `@{{ }}`, `@raw()`, `@json()` / `@tojs()`, `@php()`.
+- **Directives** – `@{{ }}`, `@raw()`, `@json()` / `@tojs()`, `@php()`, `@php...@endphp`, `@section`, `@yield`, `@component`.
 - **Attribute-based control flow** – `w-if`, `w-else-if`, `w-else`, `w-for` on normal HTML elements.
 - **Fine-grained opt-out** – `w-skip` to disable DOM-level processing in a subtree (useful when embedding another templating system).
 - **Safe by default** – escaped output for `@{{ }}`, explicit opt-in to raw HTML and raw PHP.
@@ -138,10 +138,11 @@ Webrium View uses a custom streaming HTML parser (not `DOMDocument`). It scans y
 
 ### Escaped output – `@{{ ... }}`
 
-Escaped output is the default:
+Escaped output is the default. The `$` sign is required:
 
 ```php
 <p>@{{ $user->name }}</p>
+<p>@{{ $item['price'] * $qty }}</p>
 ```
 
 Compiles to:
@@ -150,35 +151,74 @@ Compiles to:
 <?php echo htmlspecialchars($user->name, ENT_QUOTES, 'UTF-8'); ?>
 ```
 
-### Raw output – `@raw(...)`
-
-Use raw output only when you are sure the content is safe:
+Works inside HTML attributes too:
 
 ```php
-<div>@raw($html)</div>
+<a href="/users/@{{ $user->id }}">@{{ $user->name }}</a>
+```
+
+### Raw output – `@raw(...)`
+
+Use raw output only when you are sure the content is safe (e.g. HTML you generated yourself):
+
+```php
+<article>@raw($htmlContent)</article>
 ```
 
 Compiles to:
 
 ```php
-<?php echo $html; ?>
+<?php echo $htmlContent; ?>
 ```
 
-### Raw PHP – `@php(...)`
+### Inline PHP – `@php(...)`
 
-You can inject raw PHP (enabled by default):
+For short, single-line PHP expressions:
 
 ```php
-@php($i = 0)
+@php($count = count($items))
+@php($user = Auth::user())
 ```
 
-If you want to disable this directive for security reasons:
+Compiles to:
+
+```php
+<?php $count = count($items) ?>
+<?php $user = Auth::user() ?>
+```
+
+### PHP blocks – `@php ... @endphp`
+
+For multiline PHP code, use the block form. `@php` and `@endphp` must each appear alone on their line:
+
+```php
+@php
+$active  = array_filter($products, fn($p) => $p['stock'] > 0);
+$total   = array_sum(array_column($active, 'price'));
+$taxRate = 0.09;
+@endphp
+
+<p>Total: @{{ $total }}</p>
+<p>Tax: @{{ $total * $taxRate }}</p>
+```
+
+Compiles to:
+
+```php
+<?php
+$active  = array_filter($products, fn($p) => $p['stock'] > 0);
+$total   = array_sum(array_column($active, 'price'));
+$taxRate = 0.09;
+?>
+```
+
+Both `@php(...)` and `@php...@endphp` can be used in the same template. To disable all `@php` directives for security reasons:
 
 ```php
 Engine::allowRawPhpDirective(false);
 ```
 
-Any use of `@php(...)` after that will throw a `ViewTemplateException`.
+Any use of `@php(...)` or `@php...@endphp` after that will throw a `ViewTemplateException`.
 
 ### JSON / JavaScript – `@json(...)` and `@tojs(...)`
 
@@ -191,10 +231,10 @@ Both directives are equivalent and produce `json_encode`'d output:
 </script>
 ```
 
-You can also use them inside attributes:
+Works inside attributes as well:
 
 ```php
-<div data-payload="@json($payload)"></div>
+<div data-config="@json($config)"></div>
 ```
 
 ### Layouts – `@section`, `@endsection`, `@yield`
@@ -243,25 +283,44 @@ $html = Engine::component('components/user-card.php', [
 
 ### Loops – `w-for`
 
-Use `w-for` on an element to generate a `foreach`:
+Put `w-for` directly on the HTML element you want to repeat. The syntax follows PHP's own `foreach`:
 
 ```php
 <ul>
-    <li w-for="$item, $index of $items">
-        @{{ $index }} – @{{ $item }}
+    <li w-for="$items as $item">
+        @{{ $item['name'] }}
     </li>
 </ul>
 ```
 
-Compiles to:
+With key:
 
 ```php
-<?php foreach ($items as $index => $item): ?>
+<ul>
+    <li w-for="$items as $key => $item">
+        @{{ $key }}: @{{ $item['name'] }}
+    </li>
+</ul>
+```
+
+Both compile to standard PHP `foreach` / `endforeach` blocks:
+
+```php
+<?php foreach ($items as $key => $item): ?>
     <li>...</li>
 <?php endforeach; ?>
 ```
 
+The collection can be any PHP expression:
+
+```php
+<tr w-for="$user->orders() as $order">...</tr>
+<tr w-for="array_slice($rows, 0, 10) as $row">...</tr>
+```
+
 ### Conditionals – `w-if`, `w-else-if`, `w-else`
+
+Put `w-if` directly on the element you want to show or hide:
 
 ```php
 <p w-if="$user->isAdmin">
@@ -287,39 +346,56 @@ Compiles to:
 <?php endif; ?>
 ```
 
+`w-if` and `w-for` can be combined on the same element. The `if` wraps the `foreach`:
+
+```php
+<li w-if="$showList" w-for="$items as $item">@{{ $item }}</li>
+```
+
 ### Disabling processing in a subtree – `w-skip`
 
 Add `w-skip` to any element to disable DOM-level processing for that element and all its descendants:
 
 ```php
 <div w-skip>
-    <!-- View does NOT compile this w-if -->
-    <p w-if="$user->isAdmin">
-        This will be rendered exactly as-is in the final HTML.
-    </p>
+    <!-- w-for and w-if inside here are NOT compiled — they are left as-is -->
+    <span w-if="$cond">raw attribute, untouched</span>
 </div>
 ```
 
 Behavior:
 
-* `w-if`, `w-for`, `w-else-if`, and `w-else` inside this subtree are **not** converted to PHP.
-* The `w-skip` attribute itself is removed from the final HTML.
-* Inline directives such as `@{{ $something }}` **still work** in text nodes.
+- `w-if`, `w-for`, `w-else-if`, and `w-else` inside this subtree are **not** converted to PHP.
+- The `w-skip` attribute itself is removed from the final HTML.
+- Inline directives such as `@{{ $something }}` **still work** in text nodes.
 
-Useful when embedding another frontend framework's attributes:
+Useful when embedding another frontend framework's syntax:
 
 ```php
 <div w-skip>
-    <button v-if="isAdmin">Admin button</button>
+    <button v-if="isAdmin" @click="doSomething">Vue button</button>
+    <div x-data="{ open: false }">Alpine component</div>
 </div>
 ```
 
 ### `<script>` / `<style>` behavior
 
-Contents are treated as raw text (not parsed as nested HTML):
+Contents are treated as raw text, not parsed as nested HTML:
 
-* By default, inline directives inside `<script>` / `<style>` **do** work.
-* If you put `w-skip` directly on the `<script>` or `<style>` tag, nothing inside is processed and the contents are emitted verbatim.
+- By default, inline directives inside `<script>` / `<style>` **do** work.
+- Add `w-skip` directly on the tag to emit the contents completely verbatim.
+
+```php
+<!-- directives work inside -->
+<script>
+    const user = @json($user);
+</script>
+
+<!-- w-skip: everything inside emitted as-is -->
+<script w-skip>
+    const tpl = "@{{ this is not compiled }}";
+</script>
+```
 
 ## Hybrid Static Cache
 
@@ -428,8 +504,8 @@ try {
 }
 ```
 
-`ViewException` covers bad directories, missing view files, and I/O failures.
-`ViewTemplateException` covers invalid `w-for` / `w-if` syntax, unclosed tags, unmatched directive parentheses, and disabled `@php()` usage.
+`ViewException` covers bad directories, missing view files, and I/O failures.  
+`ViewTemplateException` covers invalid `w-for` / `w-if` syntax, unclosed tags, unmatched directive parentheses, unclosed `@php` blocks, and disabled `@php` usage.
 
 ## Editor.js Integration
 
@@ -528,8 +604,8 @@ $parser = new EditorJsParser(config: [], sanitize: false);
 
 ## Notes
 
-* Webrium View does **not** use `eval`; compiled templates are normal PHP files that are `require`d.
-* All data passed into `render()` is available both as individual variables (`$user`, `$title`, etc.) and as a `$zogData` array inside the template.
+- Webrium View does **not** use `eval`; compiled templates are normal PHP files that are `require`d.
+- All data passed into `render()` is available both as individual variables (`$user`, `$title`, etc.) and as a `$zogData` array inside the template.
 
 ## License
 
