@@ -412,10 +412,20 @@ class Engine
 
     /**
      * Resolve the absolute path to a view file.
+     *
+     * If the view string does not already end with the ".php" extension,
+     * it is appended automatically. This allows both of the following:
+     *   Engine::render('test.php');
+     *   Engine::render('test');
      */
     protected static function resolveViewPath(string $view): string
     {
         $view = ltrim($view, "/\\");
+
+        if (strtolower(substr($view, -4)) !== '.php') {
+            $view .= '.php';
+        }
+
         $dir  = self::getViewDir();
         $full = $dir . DIRECTORY_SEPARATOR . $view;
 
