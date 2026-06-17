@@ -38,8 +38,6 @@ Then bootstrap it in your project:
 
 use Webrium\View\Engine;
 
-require __DIR__ . '/vendor/autoload.php';
-
 Engine::setViewDir(__DIR__ . '/views');                      // where your .php templates live
 Engine::setStaticDir(__DIR__ . '/static');                   // where hybrid static files are written
 Engine::setCompiledDir(__DIR__ . '/storage/view_compiled');  // where compiled PHP templates are stored
@@ -47,9 +45,6 @@ Engine::setCompiledDir(__DIR__ . '/storage/view_compiled');  // where compiled P
 
 > The directories will be created automatically if they do not exist.
 
-### 2. Manual install (alternative)
-
-If you prefer not to use Composer, copy `Engine.php`, `View.php`, and `Parser.php` into your project, keep the `Webrium\View` namespace, and load them via your own autoloader or simple `require` statements.
 
 ## Quick Start
 
@@ -69,11 +64,9 @@ If you prefer not to use Composer, copy `Engine.php`, `View.php`, and `Parser.ph
 
 use Webrium\View\Engine;
 
-require __DIR__ . '/../vendor/autoload.php';
-
 Engine::setViewDir(__DIR__ . '/../views');
 
-echo Engine::render('hello.php', [
+echo Engine::render('hello', [
     'name'  => 'Reza',
     'today' => date('Y-m-d'),
 ]);
@@ -118,13 +111,11 @@ echo Engine::render('hello.php', [
 
 use Webrium\View\Engine;
 
-require __DIR__ . '/../vendor/autoload.php';
-
 Engine::setViewDir(__DIR__ . '/../views');
 
 echo Engine::renderLayout(
-    'layouts/main.php',
-    'pages/home.php',
+    'layouts/main',
+    'pages/home',
     [
         'title'    => 'Home',
         'userName' => 'Reza',
@@ -269,14 +260,14 @@ View::clearSections();
 
 ```php
 <div class="card">
-    @component('components/user-card.php', ['user' => $user])
+    @component('components/user-card', ['user' => $user])
 </div>
 ```
 
 Or call it directly from PHP:
 
 ```php
-$html = Engine::component('components/user-card.php', [
+$html = Engine::component('components/user-card', [
     'user' => $user,
 ]);
 ```
@@ -435,7 +426,7 @@ Engine::setDefaultHybridCacheTtl(null);
 
 ```php
 $html = Engine::hybrid(
-    'pages/home.php',
+    'pages/home',
     'home',
     [
         'title' => 'Home',
@@ -449,7 +440,7 @@ $html = Engine::hybrid(
 
 ```php
 $html = Engine::hybrid(
-    'pages/home.php',
+    'pages/home',
     'home',
     function () use ($db, $userId) {
         $user = $db->getUserById($userId);
@@ -467,10 +458,10 @@ The factory is called **only** when no valid cache exists or the cache has expir
 ### Mode 3 – Read-only access
 
 ```php
-$content = Engine::hybrid('pages/home.php', 'home', null);
+$content = Engine::hybrid('pages/home', 'home', null);
 
 if ($content === false) {
-    $content = Engine::render('pages/home.php', ['title' => 'Home', 'user' => $user]);
+    $content = Engine::render('pages/home', ['title' => 'Home', 'user' => $user]);
 }
 
 echo $content;
@@ -496,7 +487,7 @@ Engine::clearCompiled();
 
 ```php
 try {
-    echo Engine::render('pages/home.php', ['user' => $user]);
+    echo Engine::render('pages/home', ['user' => $user]);
 } catch (\Webrium\View\ViewTemplateException $e) {
     // template compilation error
 } catch (\Webrium\View\ViewException $e) {
@@ -560,7 +551,7 @@ Engine::setViewDir(__DIR__ . '/views');
 $parser  = new EditorJsParser();
 $content = $parser->parse($jsonFromDatabase);
 
-echo Engine::render('pages/article.php', compact('content'));
+echo Engine::render('pages/article', compact('content'));
 ```
 
 ### Custom CSS classes
