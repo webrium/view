@@ -606,6 +606,7 @@ $parser = new EditorJsParser(config: [], sanitize: false);
 
 - Webrium View does **not** use `eval`; compiled templates are normal PHP files that are `require`d.
 - All data passed into `render()` is available both as individual variables (`$user`, `$title`, etc.) and as a `$zogData` array inside the template.
+- The `.php` extension is optional when referencing a view. `Engine::render('hello')` and `Engine::render('hello.php')` resolve to the same file, so you can drop the extension anywhere a view name is expected (`render()`, `component()`, `renderLayout()`, the `view()` / `layout()` helpers, etc.).
 
 ## License
 
