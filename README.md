@@ -11,7 +11,7 @@ Webrium View compiles your templates to plain PHP files, never uses `eval`, and 
 ## Features
 
 - **DOM-less streaming compiler** – custom HTML parser, no `DOMDocument`, so attributes like `@click`, `:class`, `x-data`, `wire:click`, `hx-get`, etc. are preserved exactly as written.
-- **Hybrid static cache** – render a page once, save it as static HTML with a TTL, and serve the static file on future requests.
+- **Controller-level hybrid cache** – lazily cache views, layouts, named sections, components, or arbitrary rendered HTML with precise TTLs and stampede protection.
 - **Directives** – `@{{ }}`, `@raw()`, `@json()` / `@tojs()`, `@php()`, `@php...@endphp`, `@section`, `@yield`, `@component`.
 - **Attribute-based control flow** – `w-if`, `w-else-if`, `w-else`, `w-for` on normal HTML elements.
 - **Fine-grained opt-out** – `w-skip` to disable DOM-level processing in a subtree (useful when embedding another templating system).
@@ -468,6 +468,113 @@ echo $content;
 ```
 
 Returns `false` if no valid (non-expired) cache exists.
+
+### Controller-level layout cache
+
+`hybridLayout()` caches the complete child + layout output. Its lazy factory is
+not called on a cache hit, so database queries inside the factory are skipped:
+
+```php
+$html = Engine::hybridLayout(
+    'layouts/site',
+    'pages/article',
+    ['article', $locale, $slug],
+    function () use ($slug) {
+        return ['article' => Article::findBySlug($slug)];
+    },
+    Engine::CACHE_A_DAY
+);
+```
+
+Only use a full layout cache when every visitor sharing the key may receive the
+same HTML. Do not cache layouts containing session-specific headers, account
+details, carts, CSRF tokens, or authorization-dependent content.
+
+### Cached section with a dynamic layout
+
+`hybridSection()` renders and caches one named `@section` from a child view. On
+a cache hit its factory and child view are both skipped. Compose the returned
+HTML into a freshly-rendered layout with `renderLayoutWithSections()`:
+
+```php
+$content = Engine::hybridSection(
+    'pages/article',
+    'content',
+    ['article-content', $locale, $slug],
+    function () use ($slug) {
+        return [
+            'article' => Article::findBySlug($slug),
+            'related' => Article::relatedTo($slug),
+        ];
+    },
+    Engine::CACHE_A_DAY
+);
+
+$html = Engine::renderLayoutWithSections(
+    'layouts/site',
+    [
+        'seo' => $dynamicSeo,
+        'content' => $content,
+    ],
+    [
+        'currentUser' => $currentUser,
+        'cartCount' => $cartCount,
+    ]
+);
+```
+
+This keeps the header, footer, SEO, and user-specific layout data dynamic while
+avoiding both the expensive content queries and its template render.
+
+### Cached components
+
+Components use the same lazy data contract:
+
+```php
+$footer = Engine::hybridComponent(
+    'components/footer',
+    ['footer', $locale, $settingsVersion],
+    fn () => ['links' => FooterLink::published()->get()],
+    Engine::CACHE_A_DAY
+);
+```
+
+### Arbitrary controller HTML
+
+Use a namespace plus key when the cached output is produced by custom code:
+
+```php
+$report = Engine::remember(
+    'monthly-report',
+    [$accountId, $month],
+    fn () => $reportRenderer->render($accountId, $month),
+    Engine::CACHE_AN_HOUR
+);
+```
+
+The renderer must return a string.
+
+### Cache policy and TTL behavior
+
+Hybrid expiration is stored as a precise ISO-8601 timestamp. Legacy
+date-only cache files remain readable until their recorded day ends.
+
+```php
+Engine::enableHybridCache((bool) $config['cache_enabled']);
+Engine::setDefaultHybridCacheTtl(Engine::CACHE_A_DAY);
+```
+
+- `CACHE_NONE` bypasses rendering cache and removes an existing entry for the
+  same identity/key.
+- A negative TTL is invalid.
+- Setting the default TTL to `null` requires every write call to provide an
+  explicit TTL.
+- Disabling hybrid cache bypasses reads and writes; lazy factories still run so
+  the response renders normally.
+- Lazy cache misses are protected by a per-entry file lock and are published
+  with an atomic rename.
+- Cache keys must contain every value that changes the HTML, such as locale,
+  theme, slug, pagination, filters, authorization scope, and content version.
 
 ## Directory Helpers & Clearing Caches
 
