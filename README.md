@@ -596,14 +596,22 @@ Engine::clearCompiled();
 try {
     echo Engine::render('pages/home', ['user' => $user]);
 } catch (\Webrium\View\ViewTemplateException $e) {
-    // template compilation error
+    // Template compilation error.
+    error_log($e->getOriginalView() . ':' . $e->getOriginalLine());
 } catch (\Webrium\View\ViewException $e) {
-    // general runtime error
+    // Runtime error while rendering a view.
+    error_log($e->getOriginalView() . ':' . $e->getOriginalLine());
 }
 ```
 
 `ViewException` covers bad directories, missing view files, and I/O failures.  
 `ViewTemplateException` covers invalid `w-for` / `w-if` syntax, unclosed tags, unmatched directive parentheses, unclosed `@php` blocks, and disabled `@php` usage.
+
+Runtime and parser failures expose the original template through
+`getOriginalView()` and `getOriginalLine()`. The engine stores a small
+`.map.json` file beside each compiled template so rewritten or multiline
+directives still report their source line. These metadata files are generated
+and removed automatically with the compiled templates.
 
 ## Editor.js Integration
 

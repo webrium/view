@@ -41,9 +41,11 @@ class Parser
     /**
      * Placeholder map used to protect directives before text/HTML parsing.
      *
-     * @var array<string,array{type:string,inner:string}>
+     * @var array<string,array{type:string,inner:string,line:int}>
      */
     protected static array $directivePlaceholders = [];
+
+    private const SOURCE_LINE_MARKER_PATTERN = '/\/\*__WEBRIUM_SOURCE_LINE_([0-9]+)__\*\//';
 
     /**
      * HTML5 void elements (do not have closing tags).
@@ -72,6 +74,28 @@ class Parser
      */
     public static function compile(string $template): string
     {
+        return self::compileWithSourceMap($template)->getCode();
+    }
+
+    /**
+     * Compile a template and return both PHP code and generated-to-source line
+     * metadata. Existing callers can continue using compile().
+     */
+    public static function compileWithSourceMap(string $template): CompiledTemplate
+    {
+        try {
+            return self::compileMappedTemplate($template);
+        } catch (ViewTemplateException $exception) {
+            if ($exception->getOriginalLine() === 0) {
+                $exception->setOriginalLine(1);
+            }
+
+            throw $exception;
+        }
+    }
+
+    private static function compileMappedTemplate(string $template): CompiledTemplate
+    {
         // Compile @php ... @endphp block directives first, before any other
         //    processing, so PHP code inside the block is never touched by the
         //    placeholder or HTML parser.
@@ -82,12 +106,14 @@ class Parser
         $counter = 0;
 
         $makePlaceholder = function (string $type) use (&$counter) {
-            return function (string $inner) use (&$counter, $type) {
+            return function (string $inner, int $line) use (&$counter, $type) {
                 $counter++;
                 $key = "__VIEW_" . strtoupper(trim($type, '@')) . "_" . $counter . "__";
+                $leadingWhitespace = substr($inner, 0, strspn($inner, " \t\r\n"));
                 Parser::$directivePlaceholders[$key] = [
                     'type' => $type,
                     'inner' => $inner,
+                    'line' => $line + substr_count($leadingWhitespace, "\n"),
                 ];
                 return $key;
             };
@@ -129,8 +155,66 @@ class Parser
             $makePlaceholder('@component')
         );
 
-        // Compile the template using a streaming parser.
-        return self::compileStream($template, false);
+        // Compile the template using a streaming parser, then remove the
+        // internal markers while retaining their generated-to-source map.
+        return self::extractSourceMap(self::compileStream($template, false));
+    }
+
+    private static function sourceLineMarker(int $line): string
+    {
+        return '/*__WEBRIUM_SOURCE_LINE_' . max(1, $line) . '__*/';
+    }
+
+    private static function lineAt(string $text, int $offset, int $baseLine = 1): int
+    {
+        return $baseLine + substr_count(substr($text, 0, max(0, $offset)), "\n");
+    }
+
+    private static function templateException(
+        string $message,
+        string $template,
+        int $offset,
+        int $baseLine = 1
+    ): ViewTemplateException {
+        return (new ViewTemplateException($message))
+            ->setOriginalLine(self::lineAt($template, $offset, $baseLine));
+    }
+
+    private static function markPhpBlock(string $php, int $sourceLine): string
+    {
+        $marker = self::sourceLineMarker($sourceLine);
+
+        if (str_starts_with($php, '<?php')) {
+            return '<?php' . $marker . substr($php, 5);
+        }
+        if (str_starts_with($php, '<?=')) {
+            return '<?=' . $marker . substr($php, 3);
+        }
+        if (str_starts_with($php, '<?')) {
+            return '<?' . $marker . substr($php, 2);
+        }
+
+        return $php;
+    }
+
+    private static function extractSourceMap(string $markedCode): CompiledTemplate
+    {
+        $lines = explode("\n", $markedCode);
+        $lineMap = [];
+        $currentSourceLine = 1;
+
+        foreach ($lines as $index => &$line) {
+            if (preg_match(self::SOURCE_LINE_MARKER_PATTERN, $line, $matches) === 1) {
+                $currentSourceLine = max(1, (int) $matches[1]);
+            }
+
+            $lineMap[$index + 1] = $currentSourceLine;
+            $line = (string) preg_replace(self::SOURCE_LINE_MARKER_PATTERN, '', $line);
+            $currentSourceLine++;
+        }
+        unset($line);
+
+        return new CompiledTemplate(implode("\n", $lines), $lineMap);
     }
 
     /**
@@ -140,7 +224,7 @@ class Parser
      * @param bool   $noZog    When true, DOM-level attributes (w-if, w-for, ...)
      *                         are ignored in this subtree; inline directives still work.
      */
-    protected static function compileStream(string $template, bool $noZog): string
+    protected static function compileStream(string $template, bool $noZog, int $baseLine = 1): string
     {
         $out = '';
         $length = strlen($template);
@@ -148,6 +232,7 @@ class Parser
         $noZogStack = [$noZog];
 
         while ($i < $length) {
+            $sourceLine = self::lineAt($template, $i, $baseLine);
             $ch = $template[$i];
 
             if ($ch === '<') {
@@ -193,7 +278,7 @@ class Parser
                         break;
                     }
                     $phpBlock = substr($template, $i, $end + 2 - $i);
-                    $out .= $phpBlock;
+                    $out .= self::markPhpBlock($phpBlock, $sourceLine);
                     $i = $end + 2;
                     continue;
                 }
@@ -201,8 +286,11 @@ class Parser
                 // Unexpected closing tag at this level (should have been consumed inside a parent).
                 if ($i + 1 < $length && $template[$i + 1] === '/') {
                     [$tagName] = self::parseEndTag($template, $i);
-                    throw new ViewTemplateException(
-                        "Unexpected closing tag </{$tagName}> without a matching opening tag."
+                    throw self::templateException(
+                        "Unexpected closing tag </{$tagName}> without a matching opening tag.",
+                        $template,
+                        $i,
+                        $baseLine
                     );
                 }
 
@@ -224,15 +312,16 @@ class Parser
                 foreach ($tagInfo['attrs'] as $attr) {
                     $name = $attr['name'];
                     $value = $attr['value'];
+                    $attributeLine = self::lineAt($template, (int) $attr['offset'], $baseLine);
 
                     if ($value === null) {
                         // Boolean / value-less attribute: still run through compileText
                         // so that @{{ expr }} used as a dynamic attribute (e.g. @{{ $sel?'selected':'' }})
                         // gets compiled to a PHP echo.
-                        $compiledName = self::compileAttributeValue($name);
+                        $compiledName = self::compileAttributeValue($name, $attributeLine);
                         $attrHtml .= ' ' . $compiledName;
                     } else {
-                        $compiledValue = self::compileAttributeValue($value);
+                        $compiledValue = self::compileAttributeValue($value, $attributeLine);
                         $attrHtml .= ' ' . $name . '="' . $compiledValue . '"';
                     }
                 }
@@ -259,7 +348,8 @@ class Parser
                         $i,
                         $tagName,
                         $openHtml,
-                        $deepNoZog
+                        $deepNoZog,
+                        $baseLine
                     );
 
                     $out = $out . $rawHtml;
@@ -278,9 +368,10 @@ class Parser
                         continue;
                     }
 
-                    $inner = self::compileInnerHtml($template, $i, $tagName);
+                    $inner = self::compileInnerHtml($template, $i, $tagName, $baseLine);
                     $i = $inner['endPos'];
-                    $innerHtml = self::compileStream($inner['innerHtml'], true);
+                    $innerLine = self::lineAt($template, $inner['innerStartPos'], $baseLine);
+                    $innerHtml = self::compileStream($inner['innerHtml'], true, $innerLine);
 
                     $out .= $openHtml . $innerHtml . $closeHtml;
                     array_pop($noZogStack);
@@ -297,7 +388,8 @@ class Parser
                         $i,
                         $tagInfo,
                         $openHtml,
-                        $closeHtml
+                        $closeHtml,
+                        $baseLine
                     );
                     $out = $out . $chainHtml;
                     $i = $endPos;
@@ -313,6 +405,12 @@ class Parser
                     $loopPhp = '<?php foreach (' . $collectionExpr . ' as '
                         . ($keyVar ? $keyVar . ' => ' : '')
                         . $itemVar . '): ?>';
+                    $loopLine = self::lineAt(
+                        $template,
+                        (int) ($tagInfo['zpForOffset'] ?? $tagInfo['sourceOffset']),
+                        $baseLine
+                    );
+                    $loopPhp = self::markPhpBlock($loopPhp, $loopLine);
 
                     if ($selfClosing) {
                         $out .= $loopPhp . $openHtml . $closeHtml . '<?php endforeach; ?>';
@@ -320,9 +418,10 @@ class Parser
                         continue;
                     }
 
-                    $innerInfo = self::compileInnerHtml($template, $i, $tagName);
+                    $innerInfo = self::compileInnerHtml($template, $i, $tagName, $baseLine);
                     $i = $innerInfo['endPos'];
-                    $innerHtml = self::compileStream($innerInfo['innerHtml'], false);
+                    $innerLine = self::lineAt($template, $innerInfo['innerStartPos'], $baseLine);
+                    $innerHtml = self::compileStream($innerInfo['innerHtml'], false, $innerLine);
 
                     $out .= $loopPhp . $openHtml . $innerHtml . $closeHtml . '<?php endforeach; ?>';
                     array_pop($noZogStack);
@@ -336,9 +435,10 @@ class Parser
                     continue;
                 }
 
-                $innerInfo = self::compileInnerHtml($template, $i, $tagName);
+                $innerInfo = self::compileInnerHtml($template, $i, $tagName, $baseLine);
                 $i = $innerInfo['endPos'];
-                $innerHtml = self::compileStream($innerInfo['innerHtml'], false);
+                $innerLine = self::lineAt($template, $innerInfo['innerStartPos'], $baseLine);
+                $innerHtml = self::compileStream($innerInfo['innerHtml'], false, $innerLine);
 
                 $out .= $openHtml . $innerHtml . $closeHtml;
                 array_pop($noZogStack);
@@ -356,7 +456,7 @@ class Parser
             }
 
             if ($text !== '') {
-                $out .= self::compileText($text);
+                $out .= self::compileText($text, $sourceLine);
             }
         }
 
@@ -376,7 +476,8 @@ class Parser
         int $innerStartPos,
         string $tagName,
         string $openHtml,
-        bool $deepNoZog
+        bool $deepNoZog,
+        int $baseLine = 1
     ): array {
         $len = strlen($template);
         $tagLower = strtolower($tagName);
@@ -384,12 +485,22 @@ class Parser
         $closeStart = stripos($template, $needle, $innerStartPos);
 
         if ($closeStart === false) {
-            throw new ViewTemplateException("Unclosed <{$tagName}> tag.");
+            throw self::templateException(
+                "Unclosed <{$tagName}> tag.",
+                $template,
+                $innerStartPos,
+                $baseLine
+            );
         }
 
         $closeEnd = strpos($template, '>', $closeStart);
         if ($closeEnd === false) {
-            throw new ViewTemplateException("Unclosed </{$tagName}> tag.");
+            throw self::templateException(
+                "Unclosed </{$tagName}> tag.",
+                $template,
+                $closeStart,
+                $baseLine
+            );
         }
 
         $innerRaw = substr($template, $innerStartPos, $closeStart - $innerStartPos);
@@ -399,7 +510,10 @@ class Parser
         if ($deepNoZog) {
             $innerHtml = $innerRaw;
         } else {
-            $innerHtml = self::compileText($innerRaw);
+            $innerHtml = self::compileText(
+                $innerRaw,
+                self::lineAt($template, $innerStartPos, $baseLine)
+            );
         }
 
         return [$openHtml . $innerHtml . $closeHtml, $endPos];
@@ -557,6 +671,7 @@ class Parser
             $attrs[] = [
                 'name' => $attrName,
                 'value' => $value,
+                'offset' => $nameStart,
             ];
         }
 
@@ -572,6 +687,10 @@ class Parser
         $zpElseIf = null;
         $isZpElse = false;
         $zpFor = null;
+        $zpIfOffset = null;
+        $zpElseIfOffset = null;
+        $zpElseOffset = null;
+        $zpForOffset = null;
         $filteredAttrs = [];
 
         foreach ($attrs as $attr) {
@@ -588,18 +707,22 @@ class Parser
             if (!$nozogActive) {
                 if ($lname === 'w-if') {
                     $zpIf = $value ?? '';
+                    $zpIfOffset = $attr['offset'];
                     continue;
                 }
                 if ($lname === 'w-else-if') {
                     $zpElseIf = $value ?? '';
+                    $zpElseIfOffset = $attr['offset'];
                     continue;
                 }
                 if ($lname === 'w-else') {
                     $isZpElse = true;
+                    $zpElseOffset = $attr['offset'];
                     continue;
                 }
                 if ($lname === 'w-for') {
                     $zpFor = $value ?? '';
+                    $zpForOffset = $attr['offset'];
                     continue;
                 }
             }
@@ -617,6 +740,11 @@ class Parser
             'zpElseIfExpr' => $zpElseIf,
             'isZpElse' => $isZpElse,
             'zpForExpr' => $zpFor,
+            'zpIfOffset' => $zpIfOffset,
+            'zpElseIfOffset' => $zpElseIfOffset,
+            'zpElseOffset' => $zpElseOffset,
+            'zpForOffset' => $zpForOffset,
+            'sourceOffset' => $index,
         ];
 
         return [$tagInfo, $i];
@@ -667,7 +795,8 @@ class Parser
     protected static function compileInnerHtml(
         string $template,
         int $startPos,
-        string $tagName
+        string $tagName,
+        int $baseLine = 1
     ): array {
         $len = strlen($template);
         $depth = 1;
@@ -678,14 +807,24 @@ class Parser
             $pos = strpos($template, '<', $i);
             if ($pos === false) {
                 // No more tags; the element is never closed.
-                throw new ViewTemplateException("Unclosed <{$tagName}> tag.");
+                throw self::templateException(
+                    "Unclosed <{$tagName}> tag.",
+                    $template,
+                    $startPos,
+                    $baseLine
+                );
             }
 
             // Comment
             if ($pos + 3 < $len && substr($template, $pos, 4) === '<!--') {
                 $endComment = strpos($template, '-->', $pos + 4);
                 if ($endComment === false) {
-                    throw new ViewTemplateException('Unterminated HTML comment inside <' . $tagName . '>.');
+                    throw self::templateException(
+                        'Unterminated HTML comment inside <' . $tagName . '>.',
+                        $template,
+                        $pos,
+                        $baseLine
+                    );
                 }
                 $i = $endComment + 3;
                 continue;
@@ -699,7 +838,12 @@ class Parser
             ) {
                 $declEnd = strpos($template, '>', $pos + 2);
                 if ($declEnd === false) {
-                    throw new ViewTemplateException('Unterminated markup declaration inside <' . $tagName . '>.');
+                    throw self::templateException(
+                        'Unterminated markup declaration inside <' . $tagName . '>.',
+                        $template,
+                        $pos,
+                        $baseLine
+                    );
                 }
                 $i = $declEnd + 1;
                 continue;
@@ -708,7 +852,12 @@ class Parser
             if ($pos + 1 < $len && $template[$pos + 1] === '?') {
                 $phpEnd = strpos($template, '?>', $pos + 2);
                 if ($phpEnd === false) {
-                    throw new ViewTemplateException('Unterminated PHP block inside <' . $tagName . '>.');
+                    throw self::templateException(
+                        'Unterminated PHP block inside <' . $tagName . '>.',
+                        $template,
+                        $pos,
+                        $baseLine
+                    );
                 }
                 $i = $phpEnd + 2;
                 continue;
@@ -723,6 +872,8 @@ class Parser
                         $innerHtml = substr($template, $startPos, $pos - $startPos);
                         return [
                             'innerHtml' => $innerHtml,
+                            'innerStartPos' => $startPos,
+                            'closeStartPos' => $pos,
                             'endPos' => $newPos,
                         ];
                     }
@@ -744,14 +895,20 @@ class Parser
                 $needle = '</' . $nestedNameLower;
                 $closeStart = stripos($template, $needle, $nestedPos);
                 if ($closeStart === false) {
-                    throw new ViewTemplateException(
-                        "Unclosed <{$nestedTag['tag']}> tag inside <{$tagName}>."
+                    throw self::templateException(
+                        "Unclosed <{$nestedTag['tag']}> tag inside <{$tagName}>.",
+                        $template,
+                        $pos,
+                        $baseLine
                     );
                 }
                 $closeEnd = strpos($template, '>', $closeStart);
                 if ($closeEnd === false) {
-                    throw new ViewTemplateException(
-                        "Unclosed </{$nestedTag['tag']}> tag inside <{$tagName}>."
+                    throw self::templateException(
+                        "Unclosed </{$nestedTag['tag']}> tag inside <{$tagName}>.",
+                        $template,
+                        $closeStart,
+                        $baseLine
                     );
                 }
                 $i = $closeEnd + 1;
@@ -765,7 +922,12 @@ class Parser
             $i = $nestedPos;
         }
 
-        throw new ViewTemplateException("Unclosed <{$tagName}> tag.");
+        throw self::templateException(
+            "Unclosed <{$tagName}> tag.",
+            $template,
+            $startPos,
+            $baseLine
+        );
     }
 
     /**
@@ -781,7 +943,8 @@ class Parser
         int $posAfterFirstStart,
         array $firstTagInfo,
         string $firstOpenHtml,
-        string $firstCloseHtml
+        string $firstCloseHtml,
+        int $baseLine = 1
     ): array {
         $len = strlen($template);
         $i = $posAfterFirstStart;
@@ -791,16 +954,17 @@ class Parser
         // When the element also carries w-for, the foreach wraps the element
         // inside the already-open if/elseif/else branch, mirroring PHP alternative syntax:
         //   if(...): foreach(...): <tag>...</tag> endforeach; endif;
-        $compileBranch = function (array $tagInfo, string $openHtml, string $closeHtml, int &$pos) use ($template): string {
+        $compileBranch = function (array $tagInfo, string $openHtml, string $closeHtml, int &$pos) use ($template, $baseLine): string {
             $tagName = $tagInfo['tag'];
 
             // Build the element body (open + inner + close).
             if ($tagInfo['selfClosing']) {
                 $elementHtml = $openHtml . $closeHtml;
             } else {
-                $innerInfo = Parser::compileInnerHtml($template, $pos, $tagName);
+                $innerInfo = Parser::compileInnerHtml($template, $pos, $tagName, $baseLine);
                 $pos = $innerInfo['endPos'];
-                $innerHtml = Parser::compileStream($innerInfo['innerHtml'], false);
+                $innerLine = Parser::lineAt($template, $innerInfo['innerStartPos'], $baseLine);
+                $innerHtml = Parser::compileStream($innerInfo['innerHtml'], false, $innerLine);
                 $elementHtml = $openHtml . $innerHtml . $closeHtml;
             }
 
@@ -811,6 +975,12 @@ class Parser
                 $loopOpen  = '<?php foreach (' . $collectionExpr . ' as '
                     . ($keyVar ? $keyVar . ' => ' : '')
                     . $itemVar . '): ?>';
+                $loopLine = Parser::lineAt(
+                    $template,
+                    (int) ($tagInfo['zpForOffset'] ?? $tagInfo['sourceOffset']),
+                    $baseLine
+                );
+                $loopOpen = Parser::markPhpBlock($loopOpen, $loopLine);
                 $loopClose = '<?php endforeach; ?>';
                 return $loopOpen . $elementHtml . $loopClose;
             }
@@ -822,6 +992,11 @@ class Parser
         $branches[] = [
             'type' => 'if',
             'expr' => trim((string) $firstTagInfo['zpIfExpr']),
+            'line' => self::lineAt(
+                $template,
+                (int) ($firstTagInfo['zpIfOffset'] ?? $firstTagInfo['sourceOffset']),
+                $baseLine
+            ),
             'html' => $compileBranch($firstTagInfo, $firstOpenHtml, $firstCloseHtml, $i),
         ];
 
@@ -876,13 +1051,14 @@ class Parser
             foreach ($tagInfo['attrs'] as $attr) {
                 $name = $attr['name'];
                 $value = $attr['value'];
+                $attributeLine = self::lineAt($template, (int) $attr['offset'], $baseLine);
 
                 if ($value === null) {
                     // Boolean attribute: compile the name too so @{{ expr }} works
-                    $compiledName = self::compileAttributeValue($name);
+                    $compiledName = self::compileAttributeValue($name, $attributeLine);
                     $attrHtml .= ' ' . $compiledName;
                 } else {
-                    $compiledValue = self::compileAttributeValue($value);
+                    $compiledValue = self::compileAttributeValue($value, $attributeLine);
                     $attrHtml .= ' ' . $name . '="' . $compiledValue . '"';
                 }
             }
@@ -894,6 +1070,11 @@ class Parser
                 $branches[] = [
                     'type' => 'elseif',
                     'expr' => trim((string) $tagInfo['zpElseIfExpr']),
+                    'line' => self::lineAt(
+                        $template,
+                        (int) ($tagInfo['zpElseIfOffset'] ?? $tagInfo['sourceOffset']),
+                        $baseLine
+                    ),
                     'html' => $compileBranch($tagInfo, $openHtml, $closeHtml, $i),
                 ];
                 continue;
@@ -903,6 +1084,11 @@ class Parser
                 $branches[] = [
                     'type' => 'else',
                     'expr' => null,
+                    'line' => self::lineAt(
+                        $template,
+                        (int) ($tagInfo['zpElseOffset'] ?? $tagInfo['sourceOffset']),
+                        $baseLine
+                    ),
                     'html' => $compileBranch($tagInfo, $openHtml, $closeHtml, $i),
                 ];
                 break; // else must be last in a chain
@@ -918,14 +1104,19 @@ class Parser
 
         foreach ($branches as $branch) {
             if ($branch['type'] === 'if') {
-
-                $out .= "<?php if ({$branch['expr']}): ?>" . $branch['html'];
+                $out .= self::markPhpBlock(
+                    "<?php if ({$branch['expr']}): ?>",
+                    (int) $branch['line']
+                ) . $branch['html'];
             } elseif ($branch['type'] === 'elseif') {
-
-                $out .= "<?php elseif ({$branch['expr']}): ?>" . $branch['html'];
+                $out .= self::markPhpBlock(
+                    "<?php elseif ({$branch['expr']}): ?>",
+                    (int) $branch['line']
+                ) . $branch['html'];
             } else {
                 // Else branch has no expression.
-                $out .= "<?php else: ?>" . $branch['html'];
+                $out .= self::markPhpBlock('<?php else: ?>', (int) $branch['line'])
+                    . $branch['html'];
             }
         }
 
@@ -1015,9 +1206,9 @@ class Parser
             );
 
             if (!$foundEnd) {
-                throw new ViewTemplateException(
+                throw (new ViewTemplateException(
                     '@php block opened but @endphp was never found.'
-                );
+                ))->setOriginalLine(self::lineAt($template, $openStart));
             }
 
             $closeStart = $closeMatch[0][1];
@@ -1035,8 +1226,12 @@ class Parser
                 );
             }
 
+            $compiledBlock = '';
             if (trim($body) !== '') {
-                $out .= '<?php ' . "\n" . $body . "\n" . '?>';
+                $compiledBlock = self::markPhpBlock(
+                    '<?php ' . "\n" . $body . "\n" . '?>',
+                    self::lineAt($template, $openStart)
+                );
             }
 
             // Consume the newline after @endphp (if any) to avoid blank lines.
@@ -1047,6 +1242,15 @@ class Parser
             if ($offset < $len && $template[$offset] === "\n") {
                 $offset++;
             }
+
+            $sourceBlock = substr($template, $openStart, $offset - $openStart);
+            $missingLines = substr_count($sourceBlock, "\n")
+                - substr_count($compiledBlock, "\n");
+            if ($missingLines > 0) {
+                $compiledBlock .= str_repeat("<?php\n?>", $missingLines);
+            }
+
+            $out .= $compiledBlock;
         }
 
         return $out;
@@ -1058,7 +1262,7 @@ class Parser
      *   - @{{ expr }}               => escaped echo
      *   - @endsection               => View::endSection()
      */
-    protected static function compileText(string $text): string
+    protected static function compileText(string $text, int $sourceLine = 1): string
     {
         if ($text === '') {
             return '';
@@ -1076,6 +1280,7 @@ class Parser
                     $entry = Parser::$directivePlaceholders[$key];
                     $type = $entry['type'];
                     $inner = $entry['inner'];
+                    $line = $entry['line'];
 
                     // emulate original transforms
                     if ($type === '@php') {
@@ -1083,11 +1288,11 @@ class Parser
                         if ($code === '') {
                             throw new ViewTemplateException('@php() requires non-empty code.');
                         }
-                        return '<?php ' . $code . ' ?>';
+                        return Parser::markPhpBlock('<?php ' . $code . ' ?>', $line);
                     }
 
                     if ($type === '@json' || $type === '@tojs') {
-                        return Parser::buildJsonDirective($inner);
+                        return Parser::markPhpBlock(Parser::buildJsonDirective($inner), $line);
                     }
 
                     if ($type === '@raw') {
@@ -1095,7 +1300,7 @@ class Parser
                         if ($expr === '') {
                             throw new ViewTemplateException('@raw() requires a non-empty expression.');
                         }
-                        return '<?php echo ' . $expr . '; ?>';
+                        return Parser::markPhpBlock('<?php echo ' . $expr . '; ?>', $line);
                     }
 
                     if ($type === '@section') {
@@ -1103,7 +1308,10 @@ class Parser
                         if ($args === '') {
                             throw new ViewTemplateException('@section() requires a section name.');
                         }
-                        return '<?php \\Webrium\\View\\View::startSection(' . $args . '); ?>';
+                        return Parser::markPhpBlock(
+                            '<?php \\Webrium\\View\\View::startSection(' . $args . '); ?>',
+                            $line
+                        );
                     }
 
                     if ($type === '@yield') {
@@ -1111,7 +1319,10 @@ class Parser
                         if ($args === '') {
                             throw new ViewTemplateException('@yield() requires a section name.');
                         }
-                        return '<?php echo \\Webrium\\View\\View::yieldSection(' . $args . '); ?>';
+                        return Parser::markPhpBlock(
+                            '<?php echo \\Webrium\\View\\View::yieldSection(' . $args . '); ?>',
+                            $line
+                        );
                     }
 
                     if ($type === '@component') {
@@ -1119,7 +1330,10 @@ class Parser
                         if ($args === '') {
                             throw new ViewTemplateException('@component() requires at least a view name.');
                         }
-                        return '<?php echo \\Webrium\\View\\View::component(' . $args . '); ?>';
+                        return Parser::markPhpBlock(
+                            '<?php echo \\Webrium\\View\\View::component(' . $args . '); ?>',
+                            $line
+                        );
                     }
 
                     return $key;
@@ -1136,25 +1350,43 @@ class Parser
         }
 
         // Handle @{{ expr }}  (escaped echo)
+        $textBeforeEscapedEchoes = $text;
         $text = (string) preg_replace_callback(
             '/@\{\{\s*(.+?)\s*\}\}/s',
-            function (array $m): string {
-                $expr = trim($m[1]);
+            function (array $m) use ($textBeforeEscapedEchoes, $sourceLine): string {
+                $expr = trim($m[1][0]);
                 if ($expr === '') {
                     return '';
                 }
 
-                return '<?php echo htmlspecialchars(' . $expr . ", ENT_QUOTES, 'UTF-8'); ?>";
+                $line = self::lineAt($textBeforeEscapedEchoes, (int) $m[0][1], $sourceLine);
+                return self::markPhpBlock(
+                    '<?php echo htmlspecialchars(' . $expr . ", ENT_QUOTES, 'UTF-8'); ?>",
+                    $line
+                );
             },
-            $text
+            $text,
+            -1,
+            $replaceCount,
+            PREG_OFFSET_CAPTURE
         );
 
         // Handle @endsection directive (no parentheses)
         if (strpos($text, '@endsection') !== false) {
-            $text = (string) preg_replace(
+            $textBeforeEndSections = $text;
+            $text = (string) preg_replace_callback(
                 '/@endsection\b/',
-                '<?php \\Webrium\\View\\View::endSection(); ?>',
-                $text
+                function (array $match) use ($textBeforeEndSections, $sourceLine): string {
+                    $line = self::lineAt($textBeforeEndSections, (int) $match[0][1], $sourceLine);
+                    return self::markPhpBlock(
+                        '<?php \\Webrium\\View\\View::endSection(); ?>',
+                        $line
+                    );
+                },
+                $text,
+                -1,
+                $replaceCount,
+                PREG_OFFSET_CAPTURE
             );
         }
 
@@ -1172,14 +1404,14 @@ class Parser
      *   href="@{{ $url }}"
      *   data-json="@json($payload)"
      */
-    protected static function compileAttributeValue(string $value): string
+    protected static function compileAttributeValue(string $value, int $sourceLine = 1): string
     {
         if ($value === '') {
             return '';
         }
 
         // Reuse compileText so behavior inside attributes matches text nodes.
-        return self::compileText($value);
+        return self::compileText($value, $sourceLine);
     }
 
 
@@ -1221,7 +1453,11 @@ class Parser
             $len = strlen($text);
 
             if ($openParenPos >= $len || $text[$openParenPos] !== '(') {
-                throw new ViewTemplateException("Internal error parsing directive {$token}");
+                throw self::templateException(
+                    "Internal error parsing directive {$token}",
+                    $text,
+                    $start
+                );
             }
 
             // Scan forward and handle PHP-like strings and comments so parentheses inside them are ignored.
@@ -1395,13 +1631,28 @@ class Parser
             }
 
             if ($depth !== 0 || $i >= $len) {
-                throw new ViewTemplateException("Unmatched parentheses in {$token} directive.");
+                throw self::templateException(
+                    "Unmatched parentheses in {$token} directive.",
+                    $text,
+                    $start
+                );
             }
 
             // Inner contents between the outermost (...)
             $inner = substr($text, $openParenPos + 1, $i - ($openParenPos + 1));
 
-            $replacement = $transform($inner);
+            $sourceLine = self::lineAt($text, $start);
+            $replacement = $transform($inner, $sourceLine);
+
+            // Keep preprocessing line-stable so offsets discovered by later
+            // passes still refer to the original source. Padding newlines are
+            // placed inside empty PHP blocks and therefore render no output.
+            $originalDirective = substr($text, $start, $i + 1 - $start);
+            $missingLines = substr_count($originalDirective, "\n")
+                - substr_count($replacement, "\n");
+            if ($missingLines > 0) {
+                $replacement .= str_repeat("<?php\n?>", $missingLines);
+            }
 
             // Replace the whole @xxx( ... ) block
             $text = substr($text, 0, $start)
