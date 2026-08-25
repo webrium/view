@@ -688,6 +688,33 @@ $parser = new EditorJsParser([
 ]);
 ```
 
+### Text alignment
+
+`paragraph`, `header`, and `quote` blocks read a `data.alignment` value of
+`left`, `center`, `right`, or `justify` (matching what Editor.js alignment
+tools such as `editorjs-paragraph-with-alignment` save) and append an
+`{alignPrefix}{alignment}` class — the library emits classes, not inline
+styles, so you bring your own CSS just like every other block type here.
+A block with no `alignment` data (or an unrecognized value) gets no
+alignment class at all; direction is left to your page's own CSS rather
+than being silently forced to "left", which matters for RTL content.
+
+```php
+$parser = new EditorJsParser([
+    // Defaults shown — override align/alignPrefix per block type as needed.
+    'paragraph' => ['align' => true, 'alignPrefix' => 'paragraph--'],
+    'header'    => ['align' => true, 'alignPrefix' => 'header--'],
+    'quote'     => ['align' => true, 'alignPrefix' => 'quote--'],
+]);
+
+$parser->parse(['blocks' => [
+    ['type' => 'paragraph', 'data' => ['text' => 'Justified body copy.', 'alignment' => 'justify']],
+]]);
+// <p class="paragraph--justify">Justified body copy.</p>
+```
+
+Set `'align' => false` on a block type to ignore its `alignment` data entirely.
+
 ### Registering custom block handlers
 
 ```php

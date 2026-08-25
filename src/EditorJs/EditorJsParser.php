@@ -12,6 +12,9 @@ namespace Webrium\View\EditorJs;
  */
 class EditorJsParser
 {
+    /** Alignment values accepted on paragraph/header/quote blocks. */
+    private const ALLOWED_ALIGNMENTS = ['left', 'center', 'right', 'justify'];
+
     /** @var array<string, array<string, string>> CSS class config per block type */
     private array $config;
 
@@ -134,7 +137,7 @@ class EditorJsParser
         if ($text === '') return '';
 
         $cfg   = $this->config['paragraph'];
-        $class = $this->classAttr($cfg['class'] ?? '');
+        $class = $this->classAttr(($cfg['class'] ?? '') . $this->alignmentClass($data, $cfg));
 
         return "<p{$class}>{$text}</p>\n";
     }
@@ -147,7 +150,7 @@ class EditorJsParser
         if ($text === '') return '';
 
         $cfg   = $this->config['header'];
-        $class = $this->classAttr($cfg['class'] ?? '');
+        $class = $this->classAttr(($cfg['class'] ?? '') . $this->alignmentClass($data, $cfg));
 
         return "<h{$level}{$class}>{$text}</h{$level}>\n";
     }
@@ -277,12 +280,11 @@ class EditorJsParser
     {
         $text    = $this->inlineText($data['text'] ?? '');
         $caption = $this->inlineText($data['caption'] ?? '');
-        $align   = in_array($data['alignment'] ?? '', ['left', 'center', 'right']) ? $data['alignment'] : 'left';
 
         if ($text === '') return '';
 
         $cfg          = $this->config['quote'];
-        $bqClass      = $this->classAttr(($cfg['class'] ?? '') . ($cfg['align'] ? " {$cfg['alignPrefix']}{$align}" : ''));
+        $bqClass      = $this->classAttr(($cfg['class'] ?? '') . $this->alignmentClass($data, $cfg));
         $captionClass = $this->classAttr($cfg['captionClass'] ?? '');
 
         $html = "<blockquote{$bqClass}>\n<p>{$text}</p>\n";
@@ -557,6 +559,29 @@ class EditorJsParser
         return $class !== '' ? " class=\"{$class}\"" : '';
     }
 
+    /**
+     * Resolve `data.alignment` (left/center/right/justify) into a class
+     * fragment using the block's own `alignPrefix`, honoring its `align`
+     * toggle. Returns '' when alignment is disabled, unset, or invalid —
+     * a block with no alignment data emits no alignment class at all,
+     * so RTL/LTR default direction is left to the consuming page's CSS
+     * rather than silently forced to "left".
+     */
+    private function alignmentClass(array $data, array $cfg): string
+    {
+        if (empty($cfg['align'])) {
+            return '';
+        }
+
+        $alignment = $data['alignment'] ?? '';
+
+        if (!in_array($alignment, self::ALLOWED_ALIGNMENTS, true)) {
+            return '';
+        }
+
+        return ' ' . ($cfg['alignPrefix'] ?? '') . $alignment;
+    }
+
     private function formatFileSize(int $bytes): string
     {
         if ($bytes >= 1048576) return round($bytes / 1048576, 1) . ' MB';
@@ -571,8 +596,8 @@ class EditorJsParser
     private function defaultConfig(): array
     {
         return [
-            'paragraph'   => ['class' => ''],
-            'header'      => ['class' => ''],
+            'paragraph'   => ['class' => '', 'align' => true, 'alignPrefix' => 'paragraph--'],
+            'header'      => ['class' => '', 'align' => true, 'alignPrefix' => 'header--'],
             'list'        => ['class' => '', 'itemClass' => ''],
             'nestedList'  => ['class' => '', 'itemClass' => ''],
             'image'       => [
