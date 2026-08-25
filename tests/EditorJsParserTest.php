@@ -2,6 +2,7 @@
 
 namespace Webrium\View\EditorJs\Tests;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Webrium\View\EditorJs\EditorJsParser;
 
@@ -21,6 +22,16 @@ class EditorJsParserTest extends TestCase
     private function editorJson(array $blocks): string
     {
         return json_encode(['time' => 0, 'version' => '2.28.0', 'blocks' => $blocks]);
+    }
+
+    public static function alignmentProvider(): array
+    {
+        return [
+            'left'    => ['left'],
+            'center'  => ['center'],
+            'right'   => ['right'],
+            'justify' => ['justify'],
+        ];
     }
 
     // -------------------------------------------------------------------------
@@ -100,6 +111,60 @@ class EditorJsParserTest extends TestCase
         $this->assertStringContainsString('class="prose"', $html);
     }
 
+    #[DataProvider('alignmentProvider')]
+    public function testParagraphAlignment(string $alignment): void
+    {
+        $html = $this->parser->parse($this->editorJson([
+            ['type' => 'paragraph', 'data' => ['text' => 'Hi', 'alignment' => $alignment]],
+        ]));
+        $this->assertStringContainsString("class=\"paragraph--{$alignment}\"", $html);
+    }
+
+    public function testParagraphWithoutAlignmentHasNoAlignClass(): void
+    {
+        $html = $this->parser->parse($this->editorJson([
+            ['type' => 'paragraph', 'data' => ['text' => 'Hi']],
+        ]));
+        $this->assertStringNotContainsString('paragraph--', $html);
+        $this->assertStringNotContainsString('class=', $html);
+    }
+
+    public function testParagraphInvalidAlignmentIsIgnored(): void
+    {
+        $html = $this->parser->parse($this->editorJson([
+            ['type' => 'paragraph', 'data' => ['text' => 'Hi', 'alignment' => 'diagonal']],
+        ]));
+        $this->assertStringNotContainsString('paragraph--', $html);
+        $this->assertStringNotContainsString('class=', $html);
+    }
+
+    public function testParagraphAlignmentCombinesWithCustomClass(): void
+    {
+        $parser = new EditorJsParser(['paragraph' => ['class' => 'prose']]);
+        $html   = $parser->parse($this->editorJson([
+            ['type' => 'paragraph', 'data' => ['text' => 'Hi', 'alignment' => 'right']],
+        ]));
+        $this->assertStringContainsString('class="prose paragraph--right"', $html);
+    }
+
+    public function testParagraphAlignmentDisabledByConfig(): void
+    {
+        $parser = new EditorJsParser(['paragraph' => ['align' => false]]);
+        $html   = $parser->parse($this->editorJson([
+            ['type' => 'paragraph', 'data' => ['text' => 'Hi', 'alignment' => 'right']],
+        ]));
+        $this->assertStringNotContainsString('paragraph--', $html);
+    }
+
+    public function testParagraphAlignmentCustomPrefix(): void
+    {
+        $parser = new EditorJsParser(['paragraph' => ['alignPrefix' => 'text-']]);
+        $html   = $parser->parse($this->editorJson([
+            ['type' => 'paragraph', 'data' => ['text' => 'Hi', 'alignment' => 'justify']],
+        ]));
+        $this->assertStringContainsString('class="text-justify"', $html);
+    }
+
     // -------------------------------------------------------------------------
     // header
     // -------------------------------------------------------------------------
@@ -129,6 +194,23 @@ class EditorJsParserTest extends TestCase
             ['type' => 'header', 'data' => ['text' => 'Title', 'level' => 99]],
         ]));
         $this->assertStringContainsString('<h6', $html);
+    }
+
+    #[DataProvider('alignmentProvider')]
+    public function testHeaderAlignment(string $alignment): void
+    {
+        $html = $this->parser->parse($this->editorJson([
+            ['type' => 'header', 'data' => ['text' => 'Title', 'alignment' => $alignment]],
+        ]));
+        $this->assertStringContainsString("class=\"header--{$alignment}\"", $html);
+    }
+
+    public function testHeaderWithoutAlignmentHasNoAlignClass(): void
+    {
+        $html = $this->parser->parse($this->editorJson([
+            ['type' => 'header', 'data' => ['text' => 'Title']],
+        ]));
+        $this->assertStringNotContainsString('header--', $html);
     }
 
     // -------------------------------------------------------------------------
@@ -224,9 +306,30 @@ class EditorJsParserTest extends TestCase
             ]],
         ]));
         $this->assertStringContainsString('<blockquote', $html);
+        $this->assertStringContainsString('class="quote--center"', $html);
         $this->assertStringContainsString('Great quote', $html);
         $this->assertStringContainsString('<cite', $html);
         $this->assertStringContainsString('Author', $html);
+    }
+
+    public function testQuoteSupportsJustify(): void
+    {
+        $html = $this->parser->parse($this->editorJson([
+            ['type' => 'quote', 'data' => ['text' => 'Great quote', 'alignment' => 'justify']],
+        ]));
+        $this->assertStringContainsString('class="quote--justify"', $html);
+    }
+
+    public function testQuoteWithoutAlignmentNoLongerDefaultsToLeft(): void
+    {
+        // Prior to alignment support being shared with paragraph/header,
+        // an unset alignment silently defaulted to "left" here, which is
+        // wrong for RTL content. A block with no alignment data now emits
+        // no alignment class at all, same as paragraph/header.
+        $html = $this->parser->parse($this->editorJson([
+            ['type' => 'quote', 'data' => ['text' => 'Great quote']],
+        ]));
+        $this->assertStringNotContainsString('quote--', $html);
     }
 
     // -------------------------------------------------------------------------
